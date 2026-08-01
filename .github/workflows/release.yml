@@ -1,0 +1,146 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to build, for example v0.1.0
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # A tag must not produce artifacts that would fail CI, and the tag must agree
+  # with the version in Cargo.toml.
+  verify:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check the tag against Cargo.toml
+        id: version
+        run: |
+          tag="${{ inputs.tag || github.ref_name }}"
+          tag_version="${tag#v}"
+          manifest_version=$(cargo metadata --no-deps --format-version 1 |
+            jq -r '.packages[0].version')
+          if [ "$tag_version" != "$manifest_version" ]; then
+            echo "tag $tag does not match Cargo.toml version $manifest_version" >&2
+            exit 1
+          fi
+          echo "version=$tag_version" >> "$GITHUB_OUTPUT"
+
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets --all-features --locked -- -D warnings
+      - run: cargo test --all-features --locked
+
+  build:
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            native: true
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+            native: true
+          # Built on the arm64 runner because the Intel macOS runner has been
+          # retired. Apple's toolchain targets both architectures, but the
+          # result cannot be executed here.
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            native: false
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            native: true
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Smoke test the binary
+        if: matrix.native
+        shell: bash
+        run: |
+          bin="target/${{ matrix.target }}/release/mdvu"
+          "$bin" --version
+          printf '# Hello\n\n- item\n' | "$bin" --no-pager --plain --width 40 -
+
+      - name: Package
+        id: package
+        shell: bash
+        run: |
+          name="mdvu-${{ needs.verify.outputs.version }}-${{ matrix.target }}"
+          mkdir -p "dist/$name"
+          cp "target/${{ matrix.target }}/release/mdvu" "dist/$name/"
+          # The MIT licence has to travel with the binary.
+          cp README.md LICENSE "dist/$name/"
+          tar -czf "dist/$name.tar.gz" -C dist "$name"
+          rm -rf "dist/$name"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.package.outputs.name }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  release:
+    needs: [verify, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create checksums
+        working-directory: artifacts
+        run: |
+          # The glob must not be prefixed with ./, otherwise the recorded path
+          # does not match a plain download and `sha256sum -c` fails.
+          sha256sum *.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${{ inputs.tag || github.ref_name }}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" artifacts/* --clobber
+          else
+            gh release create "$tag" artifacts/* \
+              --title "$tag" \
+              --generate-notes \
+              --verify-tag
+          fi
