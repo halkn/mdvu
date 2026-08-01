@@ -1,0 +1,20 @@
+---
+source: tests/render.rs
+expression: "plain_with(\"tests/fixtures/azure-devops/attachments.md\", \"80\", &\n[\"--flavor\", \"azure-devops\"])"
+---
+# Attachments
+────────────────────────────────────────────────────────────────────────────────
+
+An inline image:
+
+[image: architecture diagram]
+(tests/fixtures/azure-devops/.attachments/architecture.png)
+
+A file attachment:
+
+design.xlsx (tests/fixtures/azure-devops/.attachments/design.xlsx)
+
+An attachment with no alt text:
+
+[image: screenshot.png]
+(tests/fixtures/azure-devops/.attachments/screenshot.png)
