@@ -149,8 +149,12 @@ fn display_target(dest: &str, ctx: &InlineContext) -> String {
     }
     match &ctx.base_dir {
         // Purely a display convenience: the path is joined, never opened.
+        // Markdown targets are always `/` separated, so the base is normalised
+        // rather than joined with the platform separator. This also keeps the
+        // rendered output identical on Windows.
         Some(base) if !base.as_os_str().is_empty() => {
-            Path::new(base).join(dest).to_string_lossy().into_owned()
+            let base = base.to_string_lossy().replace('\\', "/");
+            format!("{}/{dest}", base.trim_end_matches('/'))
         }
         _ => dest.to_string(),
     }
@@ -276,6 +280,26 @@ mod tests {
             content: vec![Inline::Text(url.into())],
         })];
         assert_eq!(text_of(&spans(&inlines, &ctx())), url);
+    }
+
+    #[test]
+    fn resolved_targets_always_use_forward_slashes() {
+        // A Windows base must not leak a backslash into a Markdown target,
+        // which would also make rendered output platform dependent.
+        for base in ["docs\\sub", "docs/sub", "docs/sub/"] {
+            let c = InlineContext {
+                base_dir: Some(PathBuf::from(base)),
+                ..Default::default()
+            };
+            let inlines = vec![Inline::Image(ImageInline {
+                dest: ".attachments/a.png".into(),
+                alt: "a".into(),
+            })];
+            assert_eq!(
+                text_of(&spans(&inlines, &c)),
+                "[image: a] (docs/sub/.attachments/a.png)"
+            );
+        }
     }
 
     #[test]
