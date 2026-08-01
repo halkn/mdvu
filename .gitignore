@@ -1,0 +1,5 @@
+/target
+*.pending-snap
+.cargo/config.toml
+# Session scratch, not part of the repository.
+.claude/plans/

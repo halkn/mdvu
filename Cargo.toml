@@ -1,0 +1,34 @@
+[package]
+name = "mdvu"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "A fast terminal Markdown viewer for GFM and Azure DevOps Wiki Markdown"
+repository = "https://github.com/halkn/mdvu"
+readme = "README.md"
+keywords = ["markdown", "terminal", "pager", "mermaid", "azure-devops"]
+categories = ["command-line-utilities", "text-processing"]
+
+[[bin]]
+name = "mdvu"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.5", features = ["derive"] }
+crossterm = "0.29.0"
+merman = { version = "0.7.0", default-features = false, features = ["ascii"] }
+pulldown-cmark = { version = "0.13.4", default-features = false }
+ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"] }
+thiserror = "2.0"
+unicode-segmentation = "1.12"
+unicode-width = "0.2.2"
+
+[dev-dependencies]
+assert_cmd = "2.0"
+insta = "1.43"
+predicates = "3.1"
+tempfile = "3.14"
+
+[profile.release]
+lto = true
+strip = true
