@@ -63,6 +63,7 @@ mdvu [OPTIONS] [FILE]
 ```console
 mdvu README.md                       # interactive pager
 mdvu docs/architecture.md --line 143 # open near a source line
+mdvu --watch notes.md                # follow the file while an agent edits it
 git show HEAD:docs/design.md | mdvu -
 mdvu --no-pager --plain doc.md       # unstyled text to stdout
 ```
@@ -79,6 +80,9 @@ mdvu --no-pager --plain doc.md       # unstyled text to stdout
 | `--mermaid <MODE>` | `unicode`, `ascii`, `source`, `off` (default: `unicode`) |
 | `--theme <THEME>` | `auto`, `dark`, `light` (default: `auto`) |
 | `--color <WHEN>` | `auto`, `always`, `never` (default: `auto`) |
+| `--hyperlinks <WHEN>` | OSC 8 links in stdout output: `auto`, `always`, `never` (default: `auto`) |
+| `--highlight <WHEN>` | Syntax highlighting for code blocks: `auto`, `never` (default: `auto`) |
+| `--watch` | Re-render when the file changes on disk (pager only) |
 | `--plain` | Alias for `--color never` |
 
 Without `--pager` or `--no-pager`, `mdvu` opens the pager when stdout is a
@@ -87,8 +91,49 @@ disables ANSI when stdout is not a terminal. `--theme auto` uses the `COLORFGBG`
 hint when present and falls back to dark; it never issues a blocking terminal
 query.
 
+`--hyperlinks` marks `http` and `https` link labels as OSC 8 terminal
+hyperlinks, so a supporting terminal can open them. Other destinations —
+relative paths, attachments, anchors and other schemes — are shown but never
+linked, and `mdvu` itself never opens anything. Hyperlinks are escape sequences,
+so `--plain` and `--color never` suppress them. `auto` emits them only when
+stdout is a terminal; use `always` for a captured preview such as `fzf`.
+
+Underline means "the destination is a real URL". Link labels are coloured, but
+only `http` and `https` targets are underlined, so they stand out from a
+relative path, a `#123` or an `@alias` styled the same way. The mark is the same
+in the pager and on stdout; where hyperlinks are emitted, an underlined label is
+also the one the terminal can open.
+
+`--watch` follows the file while something else edits it — a coding agent, or
+your editor in another window — and re-renders on every save. The reading
+position is kept: the source line at the top of the viewport stays there. A save
+that is briefly unreadable is reported in the status bar and leaves the previous
+rendering on screen. Watching needs a file and the pager, so it cannot be
+combined with stdin or `--no-pager`.
+
 Exit codes: `0` success, `1` a fatal input, decode, terminal or output error,
 `2` a usage error. A Mermaid diagram that fails to render is never fatal.
+
+### Configuration
+
+`mdvu` reads `~/.config/mdvu/config.toml` if it exists. It only sets defaults
+for the flags above; a flag given on the command line always wins. `MDVU_CONFIG`
+overrides the path, and setting it to an empty string disables the file.
+
+```toml
+flavor = "gfm"
+mermaid = "ascii"
+theme = "dark"
+color = "auto"
+hyperlinks = "always"
+highlight = "auto"
+width = 100
+watch = true
+```
+
+An unknown key or an invalid value is a usage error rather than something
+silently ignored. `watch = true` is skipped where it cannot apply, such as when
+reading stdin.
 
 ## Pager keys
 
@@ -105,10 +150,14 @@ Exit codes: `0` success, `1` a fatal input, decode, terminal or output error,
 | `0` | Reset horizontal scroll |
 | `/` | Search, `Enter` to confirm, `Esc` to cancel |
 | `n` / `N` | Next / previous match |
+| `t` | Heading list, `j` / `k` to select, `Enter` to jump, `Esc` to close |
 | `q`, `Esc` | Quit |
 
 Search runs over the rendered text, is case-insensitive, highlights every match
 on screen and cycles with `n` and `N`. An empty query keeps the previous one.
+
+`t` opens a list of the document's headings, preselecting the section on screen.
+It works in both flavors and is independent of `[[_TOC_]]`.
 Resizing re-runs layout and keeps the source line that was at the top of the
 viewport.
 
@@ -147,7 +196,11 @@ display columns. When even the minimum widths do not fit, the table becomes a
 vertical list rather than a broken grid. Cell contents are never silently
 truncated.
 
-Code blocks are not syntax highlighted and are not re-wrapped; scroll them
+Fenced code blocks with a language are syntax highlighted. Tokens are classified
+by [`syntect`](https://docs.rs/syntect/) and coloured from the same 16-colour
+theme as the rest of the document, so both themes and every terminal work the
+same way. An unknown language falls back to a uniform colour, and `--plain`
+switches highlighting off entirely. Code blocks are not re-wrapped; scroll them
 horizontally instead. Tabs expand to four-column tab stops.
 
 Raw HTML is kept as literal text. Nothing in a document is ever executed:
@@ -220,8 +273,15 @@ Font Awesome icons, and HTML tags inside labels. A flagged diagram still renders
 - The Azure DevOps compatibility check covers four known rules only. It is not a
   validator; a clean run does not mean Azure DevOps will accept the diagram.
 - Kinsoku handling is best effort and does not implement JIS X 4051.
-- No syntax highlighting, no link opening, no OSC 8 hyperlinks, no mouse, no
-  file watching, no configuration file and no user themes.
+- OSC 8 hyperlinks are emitted by the stdout backend only. In the pager a URL is
+  underlined but not clickable: `ratatui` cells carry no hyperlink attribute.
+- `--watch` follows one file. A document that includes others is not tracked,
+  because `mdvu` has no concept of includes.
+- `mdvu` never opens a link or runs an external command. Clicking is the
+  terminal's job.
+- Syntax highlighting covers the languages shipped with `syntect` and classifies
+  tokens into seven roles; it is not an editor-grade highlighter.
+- No mouse support, no user-defined themes and no configurable key bindings.
 - Linux and macOS are the primary targets. Windows is built and unit-tested in
   CI, but the pager has not been verified interactively on a Windows terminal.
 

@@ -7,9 +7,11 @@ fn render(args: &[&str]) -> String {
     let output = Command::cargo_bin("mdvu")
         .expect("binary should be built")
         .args(args)
-        // Keep the rendered surface independent of the developer's terminal.
+        // Keep the rendered surface independent of the developer's terminal
+        // and of any configuration file they happen to have.
         .env_remove("COLORFGBG")
         .env_remove("NO_COLOR")
+        .env("MDVU_CONFIG", "")
         .assert()
         .success()
         .get_output()
@@ -29,6 +31,11 @@ macro_rules! golden {
             insta::assert_snapshot!(plain($fixture, $width));
         }
     };
+}
+
+/// Styled output, with the escapes made visible so a snapshot stays readable.
+fn styled(fixture: &str, width: &str) -> String {
+    render(&["--no-pager", "--color", "always", "--width", width, fixture]).replace('\x1b', "ESC")
 }
 
 golden!(gfm_showcase_40, "tests/fixtures/gfm/showcase.md", "40");
@@ -324,4 +331,13 @@ fn every_rendered_line_fits_the_requested_width() {
             }
         }
     }
+}
+
+golden!(gfm_code_80, "tests/fixtures/gfm/code.md", "80");
+
+/// Highlighting must classify tokens without changing a single character, so
+/// the plain snapshot above and this one carry the same text.
+#[test]
+fn gfm_code_highlighted_80() {
+    insta::assert_snapshot!(styled("tests/fixtures/gfm/code.md", "80"));
 }

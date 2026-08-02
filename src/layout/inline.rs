@@ -17,6 +17,9 @@ pub struct InlineContext {
     /// this only selects between the rendered form, the source and an omitted
     /// marker.
     pub mermaid: crate::cli::MermaidMode,
+    /// Whether code blocks are split into syntax roles. Off for plain output,
+    /// where every role would collapse to the same bytes anyway.
+    pub highlight: bool,
 }
 
 /// Extensions rendered as an image placeholder rather than a generic attachment.
@@ -66,6 +69,7 @@ fn push_inline(
         Inline::Emphasis(children) => push_inlines(children, StyleRole::Emphasis, ctx, out),
         Inline::Strikethrough(children) => push_inlines(children, StyleRole::Strike, ctx, out),
         Inline::Link(link) => {
+            let start = mark(out);
             // An empty label falls back to the destination, which then must not
             // be repeated as the target.
             let label = if link.content.is_empty() {
@@ -75,6 +79,9 @@ fn push_inline(
                 push_inlines(&link.content, StyleRole::Link, ctx, out);
                 plain_text(&link.content)
             };
+            if let Some(url) = hyperlink(&link.dest) {
+                attach_link(out, start, &url);
+            }
             if let Some(target) = link_target(&link.dest, &label, ctx) {
                 push(out, " (", StyleRole::LinkTarget);
                 push(out, &target, StyleRole::LinkTarget);
@@ -121,13 +128,62 @@ fn push(out: &mut [Vec<RenderedSpan>], text: &str, role: StyleRole) {
         .push(RenderedSpan::new(text, role));
 }
 
+/// Position in the output, used to attach a destination to spans that are about
+/// to be produced. A link label may span several segments when it contains a
+/// hard break, so both coordinates are needed.
+type Mark = (usize, usize);
+
+fn mark(out: &[Vec<RenderedSpan>]) -> Mark {
+    let segment = out.len().saturating_sub(1);
+    (segment, out.get(segment).map_or(0, Vec::len))
+}
+
+/// Point every span produced since `start` at `url`.
+fn attach_link(out: &mut [Vec<RenderedSpan>], start: Mark, url: &str) {
+    let (first_segment, first_span) = start;
+    for (index, segment) in out.iter_mut().enumerate().skip(first_segment) {
+        let from = if index == first_segment {
+            first_span
+        } else {
+            0
+        };
+        for span in segment.iter_mut().skip(from) {
+            span.link = Some(url.to_string());
+        }
+    }
+}
+
+/// The URL to make clickable, or `None` when the destination must not become a
+/// terminal hyperlink.
+///
+/// Only `http` and `https` qualify. Relative paths, fragments and other schemes
+/// are display-only, matching the rule that `mdvu` never resolves or opens a
+/// target. Control characters would break out of the escape sequence, and an
+/// over-long destination is more likely to be malformed than useful.
+fn hyperlink(dest: &str) -> Option<String> {
+    const MAX_URL_LEN: usize = 2083;
+    let lowered = dest.to_ascii_lowercase();
+    if !(lowered.starts_with("http://") || lowered.starts_with("https://")) {
+        return None;
+    }
+    if dest.len() > MAX_URL_LEN {
+        return None;
+    }
+    if dest.chars().any(|c| c.is_control() || c == '\u{7f}') {
+        return None;
+    }
+    Some(dest.to_string())
+}
+
 /// Merge neighbouring spans that share a role, so a line holds as few spans as
 /// possible before wrapping and styling.
 fn coalesce(spans: Vec<RenderedSpan>) -> Vec<RenderedSpan> {
     let mut merged: Vec<RenderedSpan> = Vec::with_capacity(spans.len());
     for span in spans {
         match merged.last_mut() {
-            Some(last) if last.role == span.role => last.text.push_str(&span.text),
+            Some(last) if last.role == span.role && last.link == span.link => {
+                last.text.push_str(&span.text)
+            }
             _ => merged.push(span),
         }
     }
@@ -259,6 +315,84 @@ mod tests {
         assert_eq!(text_of(&out), "docs (https://example.com/x)");
         assert_eq!(role_of(&out, "docs"), StyleRole::Link);
         assert_eq!(role_of(&out, "example.com"), StyleRole::LinkTarget);
+    }
+
+    fn link_of(spans: &[RenderedSpan], needle: &str) -> Option<String> {
+        spans
+            .iter()
+            .find(|s| s.text.contains(needle))
+            .unwrap_or_else(|| panic!("no span containing {needle:?} in {spans:?}"))
+            .link
+            .clone()
+    }
+
+    fn linked(dest: &str, label: &str) -> Vec<RenderedSpan> {
+        let inlines = vec![Inline::Link(LinkInline {
+            dest: dest.into(),
+            title: None,
+            content: vec![Inline::Text(label.into())],
+        })];
+        spans(&inlines, &ctx())
+    }
+
+    #[test]
+    fn an_http_label_carries_its_destination() {
+        let out = linked("https://example.com/x", "docs");
+        assert_eq!(
+            link_of(&out, "docs").as_deref(),
+            Some("https://example.com/x")
+        );
+        // The displayed target is not itself a hyperlink; one link per label.
+        assert_eq!(link_of(&out, "(https"), None);
+    }
+
+    #[test]
+    fn only_http_schemes_become_hyperlinks() {
+        for dest in [
+            "./relative.md",
+            "#anchor",
+            "/absolute.md",
+            "mailto:a@example.com",
+            "javascript:alert(1)",
+            "file:///etc/passwd",
+            ".attachments/design.xlsx",
+        ] {
+            assert_eq!(hyperlink(dest), None, "{dest} must not be a hyperlink");
+        }
+        assert!(hyperlink("http://example.com").is_some());
+        assert!(hyperlink("HTTPS://Example.com/A").is_some());
+    }
+
+    #[test]
+    fn destinations_that_could_break_the_escape_sequence_are_refused() {
+        assert_eq!(hyperlink("https://example.com/\x1b]8;;evil"), None);
+        assert_eq!(hyperlink("https://example.com/a\nb"), None);
+        assert_eq!(
+            hyperlink(&format!("https://example.com/{}", "x".repeat(2100))),
+            None
+        );
+    }
+
+    #[test]
+    fn a_link_label_split_by_a_hard_break_keeps_the_destination() {
+        let inlines = vec![Inline::Link(LinkInline {
+            dest: "https://example.com".into(),
+            title: None,
+            content: vec![
+                Inline::Text("first".into()),
+                Inline::HardBreak,
+                Inline::Text("second".into()),
+            ],
+        })];
+        let out = segments(&inlines, &ctx());
+        assert_eq!(
+            link_of(&out[0], "first").as_deref(),
+            Some("https://example.com")
+        );
+        assert_eq!(
+            link_of(&out[1], "second").as_deref(),
+            Some("https://example.com")
+        );
     }
 
     #[test]

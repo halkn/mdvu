@@ -32,6 +32,9 @@ pub enum AppError {
         source: std::io::Error,
     },
 
+    #[error("{path}: cannot watch for changes: {message}")]
+    Watch { path: PathBuf, message: String },
+
     #[error("output: {source}")]
     Output {
         #[source]

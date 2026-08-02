@@ -3,8 +3,9 @@ pub mod event;
 pub mod search;
 pub mod state;
 pub mod view;
+pub mod watch;
 
-pub use app::{PagerInput, run};
+pub use app::{PagerInput, Watched, run};
 
 use std::io::{Stdout, Write, stdout};
 

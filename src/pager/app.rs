@@ -1,29 +1,52 @@
 //! Pager event loop.
 //!
 //! The document is parsed once before the loop starts. Layout re-runs only when
-//! the terminal size changes, never per frame.
+//! the terminal size changes or the file is reloaded, never per frame.
 
-use std::time::Duration;
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use crossterm::event::{self, Event};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
+use crate::cli::{Flavor, MermaidMode};
 use crate::error::{AppError, Result};
+use crate::input;
 use crate::layout::inline::InlineContext;
 use crate::layout::theme::Theme;
 use crate::layout::{LayoutOptions, RenderedDocument, layout_document};
-use crate::markdown::model::Document;
+use crate::markdown::model::{Document, headings};
 use crate::pager::TerminalGuard;
 use crate::pager::event::{Input, map};
-use crate::pager::state::{PagerState, rendered_line_for_source, source_line_at};
+use crate::pager::state::{OutlineItem, PagerState, rendered_line_for_source, source_line_at};
 use crate::pager::view::{ViewContext, draw, widest_line};
+use crate::pager::watch::Watch;
+use crate::source::SourceText;
 
 /// How long a frame waits for input before looping again.
 const POLL: Duration = Duration::from_millis(250);
 
-pub struct PagerInput<'a> {
-    pub document: &'a Document,
+/// The file to follow, and how to parse it again. Reloading repeats exactly the
+/// steps taken at startup, so a reloaded document is indistinguishable from one
+/// opened fresh.
+pub struct Watched {
+    pub path: PathBuf,
+    pub flavor: Flavor,
+    pub mermaid: MermaidMode,
+}
+
+impl Watched {
+    fn reload(&self) -> Result<Document> {
+        let loaded = input::load(&crate::cli::InputSource::File(self.path.clone()))?;
+        let mut document = crate::flavor::parse(SourceText::new(loaded.text), self.flavor);
+        crate::diagram::resolve(&mut document, self.mermaid, self.flavor);
+        Ok(document)
+    }
+}
+
+pub struct PagerInput {
+    pub document: Document,
     pub inline: InlineContext,
     pub theme: Theme,
     pub title: String,
@@ -31,24 +54,46 @@ pub struct PagerInput<'a> {
     /// Overrides the terminal width when the reader passed `--width`.
     pub width_override: Option<usize>,
     pub start_line: Option<usize>,
+    /// Set by `--watch`.
+    pub watched: Option<Watched>,
 }
 
-pub fn run(input: PagerInput<'_>) -> Result<()> {
+pub fn run(input: PagerInput) -> Result<()> {
     let mut guard = TerminalGuard::enter().map_err(|source| AppError::Terminal { source })?;
     let result = event_loop(input);
     guard.leave();
     result
 }
 
-fn event_loop(input: PagerInput<'_>) -> Result<()> {
+fn event_loop(input: PagerInput) -> Result<()> {
+    let PagerInput {
+        mut document,
+        inline,
+        theme,
+        title,
+        flavor,
+        width_override,
+        start_line,
+        watched,
+    } = input;
+
     let backend = CrosstermBackend::new(std::io::stdout());
     let mut terminal = Terminal::new(backend).map_err(|source| AppError::Terminal { source })?;
+
+    let mut watch = match &watched {
+        Some(watched) => Some(Watch::new(&watched.path).map_err(|error| AppError::Watch {
+            path: watched.path.clone(),
+            message: error.to_string(),
+        })?),
+        None => None,
+    };
 
     let area = terminal
         .size()
         .map_err(|source| AppError::Terminal { source })?;
-    let mut width = content_width(&input, area.width);
-    let mut rendered = layout(&input, width);
+    let content_width = |columns: u16| width_override.unwrap_or_else(|| (columns as usize).max(1));
+    let mut width = content_width(area.width);
+    let mut rendered = layout_document(&document, LayoutOptions::new(width), &inline);
     let mut texts = line_texts(&rendered);
 
     let body_height = area.height.saturating_sub(1) as usize;
@@ -61,25 +106,47 @@ fn event_loop(input: PagerInput<'_>) -> Result<()> {
         area.width as usize,
     );
 
-    if let Some(source_line) = input.start_line
+    state.set_outline(outline(&document, &rendered));
+
+    if let Some(source_line) = start_line
         && let Some(index) = rendered_line_for_source(&rendered.lines, source_line)
     {
         state.initial_line = Some(index);
         state.top = index.saturating_sub(state.height / 2).min(state.max_top());
     }
 
-    let ctx = ViewContext {
-        title: &input.title,
-        flavor: input.flavor,
-        source_lines: input.document.source.line_count(),
-        diagnostics: rendered.diagnostics.len(),
-        theme: input.theme,
-    };
-
     loop {
+        let ctx = ViewContext {
+            title: &title,
+            flavor,
+            source_lines: document.source.line_count(),
+            diagnostics: rendered.diagnostics.len(),
+            theme,
+        };
         terminal
             .draw(|frame| draw(frame, &rendered.lines, &state, &ctx))
             .map_err(|source| AppError::Terminal { source })?;
+
+        // Reloading happens between frames, never during one, so the frame loop
+        // still does no parsing.
+        if let (Some(watch), Some(watched)) = (watch.as_mut(), watched.as_ref())
+            && watch.should_reload(Instant::now())
+        {
+            match watched.reload() {
+                Ok(reloaded) => {
+                    document = reloaded;
+                    let anchor = source_line_at(&rendered.lines, state.top);
+                    rendered = layout_document(&document, LayoutOptions::new(width), &inline);
+                    texts = line_texts(&rendered);
+                    restore(&mut state, &rendered, &texts, &document, anchor);
+                    state.status = Some("reloaded".to_string());
+                }
+                // A file being rewritten can be briefly missing or invalid.
+                // The previous rendering stays on screen and the next event
+                // tries again.
+                Err(error) => state.status = Some(format!("reload failed: {error}")),
+            }
+        }
 
         if !event::poll(POLL).map_err(|source| AppError::Terminal { source })? {
             continue;
@@ -94,8 +161,8 @@ fn event_loop(input: PagerInput<'_>) -> Result<()> {
                 // Keep the reader's place across a re-layout by remembering the
                 // source line at the top of the viewport.
                 let anchor = source_line_at(&rendered.lines, state.top);
-                width = content_width(&input, columns);
-                rendered = layout(&input, width);
+                width = content_width(columns);
+                rendered = layout_document(&document, LayoutOptions::new(width), &inline);
                 texts = line_texts(&rendered);
                 state.resize(
                     rendered.lines.len(),
@@ -104,6 +171,7 @@ fn event_loop(input: PagerInput<'_>) -> Result<()> {
                     columns as usize,
                 );
                 state.search.recompute(&texts);
+                state.set_outline(outline(&document, &rendered));
                 state.initial_line = None;
                 if let Some(line) = anchor
                     && let Some(index) = rendered_line_for_source(&rendered.lines, line)
@@ -113,6 +181,31 @@ fn event_loop(input: PagerInput<'_>) -> Result<()> {
             }
             _ => {}
         }
+    }
+}
+
+/// Put the reader back where they were after the surface was rebuilt at the
+/// same size, keeping `anchor`'s source line in view.
+fn restore(
+    state: &mut PagerState,
+    rendered: &RenderedDocument,
+    texts: &[String],
+    document: &Document,
+    anchor: Option<usize>,
+) {
+    state.resize(
+        rendered.lines.len(),
+        widest_line(&rendered.lines),
+        state.height,
+        state.width,
+    );
+    state.search.recompute(texts);
+    state.set_outline(outline(document, rendered));
+    state.initial_line = None;
+    if let Some(line) = anchor
+        && let Some(index) = rendered_line_for_source(&rendered.lines, line)
+    {
+        state.top = index.min(state.max_top());
     }
 }
 
@@ -126,23 +219,33 @@ fn handle_key(state: &mut PagerState, key: event::KeyEvent, texts: &[String]) ->
         }
         Input::SearchConfirm => state.confirm_search(texts),
         Input::SearchCancel => state.cancel_search(),
+        Input::OutlineMove(delta) => state.move_outline(delta),
+        Input::OutlineConfirm => state.confirm_outline(),
+        Input::OutlineCancel => state.cancel_outline(),
         Input::Ignored => {}
     }
     true
 }
 
-fn content_width(input: &PagerInput<'_>, columns: u16) -> usize {
-    input
-        .width_override
-        .unwrap_or_else(|| (columns as usize).max(1))
-}
-
-fn layout(input: &PagerInput<'_>, width: usize) -> RenderedDocument {
-    layout_document(input.document, LayoutOptions::new(width), &input.inline)
-}
-
 fn line_texts(rendered: &RenderedDocument) -> Vec<String> {
     rendered.lines.iter().map(|l| l.text()).collect()
+}
+
+/// Headings paired with the rendered line they start on. Rebuilt whenever the
+/// surface is laid out again, since the line numbers change with the width.
+fn outline(document: &Document, rendered: &RenderedDocument) -> Vec<OutlineItem> {
+    headings(&document.blocks)
+        .into_iter()
+        .filter_map(|heading| {
+            rendered_line_for_source(&rendered.lines, heading.range.line_start).map(|line| {
+                OutlineItem {
+                    level: heading.level,
+                    text: heading.plain.clone(),
+                    line,
+                }
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]

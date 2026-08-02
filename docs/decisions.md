@@ -43,7 +43,7 @@ adapter 境界（`plan.md` 6.3）内で対処する。
 
 ### 重複依存
 
-`cargo tree -d` は 26 件の重複を報告する。いずれも推移的依存（`merman` 系と dev 依存の
+`cargo tree -d` は v0.1 時点で 26 件、v0.2 で 30 件の重複を報告する。いずれも推移的依存（`merman` 系と dev 依存の
 `insta` / `assert_cmd` 系）に由来し、`hashbrown` / `phf_shared` / `itertools` などの
 メジャーバージョン差である。直接依存の選択で解消できるものは無いため、そのままとする。
 
@@ -149,6 +149,135 @@ mdvu 側を強くしたもの:
 `wrap::min_unbreakable_width` を追加し、「break opportunity を持たない最長の run の幅」を
 最小幅とした。これにより語中分割が起きなくなり、本当に収まらない場合だけ vertical
 fallback へ落ちる。
+
+## v0.2 のスコープ
+
+`plan.md` 18章の v0.2 候補のうち、config file / OSC 8 hyperlink / syntax highlighting /
+TOC navigation / file watch を実装した。以下は実装しない。
+
+- **Azure diagnostic 拡張**: `plan.md` 5.4 は Mermaid 互換ルールを「MVP で最低限検出するもの」
+  として 4 件に限り、data-driven に隔離して追加しやすくすると定めていた。その拡張が候補だったが、
+  Azure DevOps の Mermaid サポート仕様は変更が多く、ルールの追随コストが実利に見合わない。
+  `diagram/azure_compat.rs` の `RULES` は構造をそのまま維持し、必要が生じた時点で追加する。
+- **Link open**: `open` / `xdg-open` の起動が必要で、`plan.md` 11.3 と 17章 DoD の
+  「External command 実行なし」を破る。この不変条件は維持し、リンクを開くのは OSC 8 経由で
+  端末に委ねる。
+
+## OSC 8 hyperlink を stdout 限定にした理由
+
+ratatui 0.30 の `Cell` はハイパーリンク属性を持たない。cell の symbol へエスケープ列を
+埋め込めば描画自体は可能だが、ratatui は差分描画のため、リンクを開いたセルだけが再描画された
+場合に閉じ側が出力されず、以降の画面全体がリンク扱いになる。ratatui の内部実装に依存する
+壊れ方であり、割に合わない。
+
+そのため OSC 8 は `output/ansi.rs`（`--no-pager` / パイプ / `fzf --preview`）だけで出力し、
+pager 内のリンクは従来どおり style 付きテキストとする。制約は README の Known limitations に
+記載した。
+
+### 下線の意味
+
+`StyleRole::Link` から下線を外し、**`RenderedSpan::link` を持つ span**（= 宛先が
+`http` / `https`）にだけ backend 側で下線を付ける。`Link` ロールは色だけを持つ。
+
+理由は、リンクとして style される範囲（相対パス・`.attachments`・`#123`・`@alias`）が
+実 URL より広いため。すべて同じ下線付きだと、どれが実際の URL なのか区別できない。
+
+当初は「下線 = この端末で開ける」として OSC 8 を出した span だけに付けたが、pager は
+OSC 8 を出さないため、主要な UI である pager で下線が一切出なくなった。そのため意味を
+「下線 = 宛先が実 URL」に統一し、`output/ansi.rs` と `pager/view.rs` の両方で同じ条件で
+付ける。`--hyperlinks` の有無で見た目が変わることもなくなった。OSC 8 を出す経路では、
+下線が付いた語がそのまま端末で開ける語になる。
+
+リンク化するのは `http` / `https` のみとした。相対パス・`.attachments`・`mailto:` などは
+`plan.md` 8.7 の「target は読まない」に従い表示のみとする。加えて、制御文字を含む dest と
+2083 バイト超の dest はリンク化しない。前者はエスケープ列を閉じて任意の OSC を注入できるため、
+後者は正当な URL よりも壊れた入力である可能性が高いため。
+
+## Syntax highlighting
+
+`syntect` は **パーサとしてのみ** 使い、syntect のテーマは使わない。`ParseState` +
+`ScopeStack` で得たスコープを `StyleRole::Syntax(SyntaxKind)` の 7 種へ写像し、色は
+`layout/theme.rs` が決める。
+
+この形にした理由は、既存の `Color`（16 色列挙）を truecolor へ広げずに済むこと、dark / light
+両テーマと plain backend、snapshot の安定性がそのまま保たれること、そして `merman` と同じく
+外部 crate を 1 module（`layout/highlight.rs`）に隔離できることによる。
+
+- feature は `parsing` / `default-syntaxes` / `regex-fancy` のみ。C 依存の `onig` を避け、
+  `default-themes` と `html` は持ち込まない。
+- `SyntaxSet` は `OnceLock` で遅延初期化する。code block が無い文書は読み込まない。
+- ハイライトはタブ展開後の文字列に対して行う。展開前に行うと列がずれる。
+- スコープ解決は内側から外側へ走査するが、`punctuation.definition` は透過させる。これがないと
+  コメントの `//` や文字列の引用符が comment / string ではなく punctuation になる。
+- 分類されなかった範囲は `StyleRole::Code`（一色の黄）ではなく `Normal` にする。前者だと
+  識別子がすべて色付きになり、分類できたトークンが埋もれる。
+
+依存は 199 → 286 crate に増えた。増分は syntect の syntax 定義読み込み（`bincode` /
+`flate2` / `serde_yaml` など）と `toml` / `serde` / `notify` による。
+
+## Config file のスコープ
+
+既存フラグの既定値上書きだけに限定した。`plan.md` 2.2 は Config system と User-defined theme を
+非目標としており、既定値の外部化はその趣旨を最小限だけ緩めるものとして受け入れられるが、
+テーマ色や keymap まで開くと意味論が増え、`plan.md` 19章が禁じる「user-visible CLI flag の
+勝手な変更」に近い領域へ踏み込む。
+
+- 値の解析は clap の `ValueEnum::from_str` を使う。serde derive で書き直すと、受理される綴りが
+  `--help` と二重管理になる。
+- `serde(deny_unknown_fields)` を付ける。typo が黙って無効になる方が実害が大きい。
+- 探索順は `MDVU_CONFIG` → `$XDG_CONFIG_HOME/mdvu/config.toml` → `~/.config/mdvu/config.toml`。
+  macOS でも `~/.config` に統一し、`dirs` 系の依存を増やさない。
+- `MDVU_CONFIG` が空文字なら読み込まない。テストはこれを使い、実行環境のホームに依存しない。
+- CLI が明示指定されたかの判定は、既存の `--plain` / `--color` 衝突判定と同じ clap の
+  `ValueSource` を使う。
+
+## File watch
+
+`notify` の `RecommendedWatcher` をイベントを `std::sync::mpsc` で受ける形で使い、既存の
+`crossterm::event::poll`（250ms）ループのタイムアウト側で回収する。async runtime は追加しない
+（`plan.md` 2.2 / 12章）。再読込は frame 描画の外側で起き、起動時とまったく同じ経路
+（`input::load` → `flavor::parse` → `diagram::resolve` → `layout_document`）を通る。
+
+- **監視対象はファイルではなく親ディレクトリ**。エディタや Coding Agent の atomic save
+  （一時ファイル → rename）は inode を差し替えるため、ファイル自体への watch は静かに外れる。
+  イベントは file name で絞り込むので、同じディレクトリの他のファイルは無視される。
+- イベント種別は `EventKind::Access` だけを捨て、他はすべて変更として扱う。backend ごとに
+  分類の粒度が違い、取りこぼしより余分な再読込の方が安い。
+- デバウンスは 100ms。`notify-debouncer-*` は追加せず、`Instant` を引数に取る純粋な
+  `Debounce` として持ち、タイマ非依存にテストする。
+- 読み込み失敗（一時的な truncate、消失、非 UTF-8 への差し替え）は fatal にせず、status bar に
+  出して直前の描画を保持する。
+- `--watch` は stdin と `--no-pager` との併用を usage error にする。ただし config の
+  `watch = true` は適用できない状況では黙って無視する。設定を書いた人が `mdvu -` を使うたびに
+  usage error になるのは筋が悪い。
+
+### sandbox 内で検証できない部分
+
+`pager/watch.rs` の `a_write_to_the_file_is_noticed` と `an_atomic_save_is_noticed` は、
+実際にファイルを書き換えて `RecommendedWatcher`（macOS では FSEvents）のイベントを待つ。
+開発時の sandbox では FSEvents のイベントが 1 件も届かず、この 2 件が失敗する。
+
+sandbox の制約であってコードの問題ではないことは、`Watch` の watcher を `PollWatcher`
+（OS 通知を使わない stat ポーリング）へ差し替えると同じ 2 件が通ることで確認した。
+ディレクトリ監視・file name フィルタ・デバウンスはいずれも正しく動いている。
+
+出荷するのは `RecommendedWatcher` とする。監視対象は 1 ファイルなのでポーリングでも実害は
+小さいが、待機中の wakeup が無く反応も即時である通知ベースの方が pager に適している。
+2 件は無効化せず CI で検証する。実際に macOS CI で通ることを確認した。
+
+なお FSEvents は、watch 開始の直前に起きた書き込みを起動後に報告することがある。テストは
+`Watch::new` の直後にファイルを作るため、この積み残しを捨ててから本題の操作を行う
+（`settle`）。捨てないと、テストが起こしていない変更で reload が観測される。実運用では
+文書を開いてから保存されるまでに間があるので問題にならない。
+
+## 見出しオーバーレイ
+
+`markdown::model::headings()` を使うため flavor に依存せず、Azure の `[[_TOC_]]` 展開とは
+独立に動く。見出しの source 行は既存の `pager::state::rendered_line_for_source` で rendered 行へ
+解決し、resize / 再読込のたびに解決し直す。
+
+pager の対話部分は自動テストできないため、状態遷移は `state.rs` / `event.rs` の純粋な unit test で
+固め、描画自体は ratatui の `TestBackend` で 1 フレーム描いて検証する。
 
 ## Windows
 

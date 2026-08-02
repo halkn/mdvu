@@ -53,6 +53,18 @@ pub struct Cli {
     #[arg(long, value_enum, default_value_t = ColorWhen::Auto, value_name = "WHEN")]
     pub color: ColorWhen,
 
+    /// OSC 8 terminal hyperlinks in stdout output
+    #[arg(long, value_enum, default_value_t = HyperlinkWhen::Auto, value_name = "WHEN")]
+    pub hyperlinks: HyperlinkWhen,
+
+    /// Syntax highlighting for fenced code blocks
+    #[arg(long, value_enum, default_value_t = HighlightWhen::Auto, value_name = "WHEN")]
+    pub highlight: HighlightWhen,
+
+    /// Re-render the file when it changes on disk
+    #[arg(long)]
+    pub watch: bool,
+
     /// Alias for --color never
     #[arg(long)]
     pub plain: bool,
@@ -85,6 +97,19 @@ pub enum Theme {
 pub enum ColorWhen {
     Auto,
     Always,
+    Never,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum HyperlinkWhen {
+    Auto,
+    Always,
+    Never,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum HighlightWhen {
+    Auto,
     Never,
 }
 
@@ -133,11 +158,20 @@ impl Cli {
     /// Usage errors exit with code 2 via clap.
     pub fn parse_checked() -> Self {
         let matches = Self::command().get_matches();
-        Self::from_checked_matches(&matches).unwrap_or_else(|err| err.exit())
+        let config = crate::config::load()
+            .map_err(|message| {
+                Self::command().error(clap::error::ErrorKind::ValueValidation, message)
+            })
+            .unwrap_or_else(|err| err.exit());
+        Self::from_checked_matches(&matches, &config).unwrap_or_else(|err| err.exit())
     }
 
-    fn from_checked_matches(matches: &ArgMatches) -> Result<Self, clap::Error> {
-        let cli = Self::from_arg_matches(matches)?;
+    fn from_checked_matches(
+        matches: &ArgMatches,
+        config: &crate::config::Config,
+    ) -> Result<Self, clap::Error> {
+        let mut cli = Self::from_arg_matches(matches)?;
+        cli.apply(config, matches);
         // `--plain` is defined as an alias for `--color never`, so pairing it with an
         // explicit `--color always` is contradictory. A defaulted `--color` is not.
         let color_from_cli = matches.value_source("color") == Some(ValueSource::CommandLine);
@@ -147,7 +181,75 @@ impl Cli {
                 "the argument '--plain' cannot be used with '--color always'",
             ));
         }
+        if cli.watch {
+            // There is nothing to follow when the document arrives on stdin,
+            // and nothing to re-render when the pager is not running.
+            if cli.no_pager {
+                return Err(Self::command().error(
+                    clap::error::ErrorKind::ArgumentConflict,
+                    "the argument '--watch' cannot be used with '--no-pager'",
+                ));
+            }
+            if cli.file.as_deref().is_none_or(|file| file == "-") {
+                return Err(Self::command().error(
+                    clap::error::ErrorKind::ArgumentConflict,
+                    "the argument '--watch' requires a FILE, not stdin",
+                ));
+            }
+        }
         Ok(cli)
+    }
+
+    /// Take configured values for the flags that were left at their built-in
+    /// default. An explicit flag is never overridden.
+    fn apply(&mut self, config: &crate::config::Config, matches: &ArgMatches) {
+        let defaulted = |name: &str| matches.value_source(name) == Some(ValueSource::DefaultValue);
+
+        if let Some(flavor) = config.flavor
+            && defaulted("flavor")
+        {
+            self.flavor = flavor;
+        }
+        if let Some(mermaid) = config.mermaid
+            && defaulted("mermaid")
+        {
+            self.mermaid = mermaid;
+        }
+        if let Some(theme) = config.theme
+            && defaulted("theme")
+        {
+            self.theme = theme;
+        }
+        if let Some(color) = config.color
+            && defaulted("color")
+        {
+            self.color = color;
+        }
+        if let Some(hyperlinks) = config.hyperlinks
+            && defaulted("hyperlinks")
+        {
+            self.hyperlinks = hyperlinks;
+        }
+        if let Some(highlight) = config.highlight
+            && defaulted("highlight")
+        {
+            self.highlight = highlight;
+        }
+        // `--width` has no default, so an absent value means it is unset.
+        if let Some(width) = config.width
+            && self.width.is_none()
+        {
+            self.width = Some(width);
+        }
+        // Watching is only meaningful for a file shown in the pager. A
+        // configured `watch = true` is skipped where it cannot apply rather
+        // than turning an ordinary `mdvu -` into a usage error.
+        if config.watch == Some(true)
+            && !self.no_pager
+            && self.file.as_deref().is_some_and(|file| file != "-")
+        {
+            self.watch = true;
+        }
     }
 
     pub fn input_source(
@@ -191,6 +293,29 @@ impl Cli {
         }
     }
 
+    /// Whether the stdout backend emits OSC 8 hyperlinks.
+    ///
+    /// Hyperlinks are escape sequences, so they follow the colour policy: a
+    /// plain document stays free of every escape byte, including these.
+    pub fn hyperlinks(&self, ctx: TerminalContext, color: ColorChoice) -> bool {
+        if color == ColorChoice::Plain {
+            return false;
+        }
+        match self.hyperlinks {
+            HyperlinkWhen::Never => false,
+            HyperlinkWhen::Always => true,
+            // A capture such as `fzf --preview` cannot be detected, so `auto`
+            // stays conservative and `--hyperlinks always` opts in.
+            HyperlinkWhen::Auto => ctx.stdout_is_tty,
+        }
+    }
+
+    /// Whether code blocks are split into syntax roles. Without ANSI every role
+    /// would render as the same bytes, so highlighting is skipped entirely.
+    pub fn highlight(&self, color: ColorChoice) -> bool {
+        self.highlight == HighlightWhen::Auto && color == ColorChoice::Ansi
+    }
+
     pub fn start_line(&self) -> Option<usize> {
         self.line.map(|n| n as usize)
     }
@@ -199,17 +324,23 @@ impl Cli {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Config;
 
     fn cli(args: &[&str]) -> Cli {
+        configured(args, &Config::default())
+    }
+
+    /// Parse `args` as if `config` had been read from disk.
+    fn configured(args: &[&str], config: &Config) -> Cli {
         let argv = std::iter::once("mdvu").chain(args.iter().copied());
         let matches = Cli::command().get_matches_from(argv);
-        Cli::from_checked_matches(&matches).expect("expected valid arguments")
+        Cli::from_checked_matches(&matches, config).expect("expected valid arguments")
     }
 
     fn try_cli(args: &[&str]) -> Result<Cli, clap::Error> {
         let argv = std::iter::once("mdvu").chain(args.iter().copied());
         let matches = Cli::command().try_get_matches_from(argv)?;
-        Cli::from_checked_matches(&matches)
+        Cli::from_checked_matches(&matches, &Config::default())
     }
 
     const TTY: TerminalContext = TerminalContext {
@@ -295,6 +426,78 @@ mod tests {
             cli(&["--plain", "a.md"]).color_choice(TTY, OutputMode::Pager),
             ColorChoice::Plain
         );
+    }
+
+    #[test]
+    fn configured_defaults_apply_when_a_flag_is_absent() {
+        let config = Config {
+            flavor: Some(Flavor::Gfm),
+            mermaid: Some(MermaidMode::Ascii),
+            theme: Some(Theme::Light),
+            color: Some(ColorWhen::Never),
+            hyperlinks: Some(HyperlinkWhen::Always),
+            highlight: Some(HighlightWhen::Never),
+            width: Some(100),
+            watch: None,
+        };
+        let cli = configured(&["a.md"], &config);
+        assert_eq!(cli.flavor, Flavor::Gfm);
+        assert_eq!(cli.mermaid, MermaidMode::Ascii);
+        assert_eq!(cli.theme, Theme::Light);
+        assert_eq!(cli.color, ColorWhen::Never);
+        assert_eq!(cli.hyperlinks, HyperlinkWhen::Always);
+        assert_eq!(cli.highlight, HighlightWhen::Never);
+        assert_eq!(cli.width, Some(100));
+    }
+
+    #[test]
+    fn an_explicit_flag_beats_the_configuration() {
+        let config = Config {
+            flavor: Some(Flavor::Gfm),
+            width: Some(100),
+            watch: None,
+            ..Config::default()
+        };
+        let cli = configured(
+            &["--flavor", "azure-devops", "--width", "40", "a.md"],
+            &config,
+        );
+        assert_eq!(cli.flavor, Flavor::AzureDevops);
+        assert_eq!(cli.width, Some(40));
+    }
+
+    #[test]
+    fn an_empty_configuration_leaves_the_built_in_defaults() {
+        let cli = configured(&["a.md"], &Config::default());
+        assert_eq!(cli.flavor, Flavor::AzureDevops);
+        assert_eq!(cli.mermaid, MermaidMode::Unicode);
+        assert_eq!(cli.width, None);
+    }
+
+    #[test]
+    fn hyperlinks_follow_the_color_policy() {
+        // A plain document must not contain any escape byte, hyperlinks included.
+        assert!(
+            !cli(&["--plain", "--hyperlinks", "always", "a.md"])
+                .hyperlinks(TTY, ColorChoice::Plain)
+        );
+        assert!(!cli(&["--hyperlinks", "always", "a.md"]).hyperlinks(TTY, ColorChoice::Plain));
+        assert!(cli(&["--hyperlinks", "always", "a.md"]).hyperlinks(PIPED, ColorChoice::Ansi));
+        assert!(!cli(&["--hyperlinks", "never", "a.md"]).hyperlinks(TTY, ColorChoice::Ansi));
+    }
+
+    #[test]
+    fn highlighting_needs_ansi_and_can_be_turned_off() {
+        assert!(cli(&["a.md"]).highlight(ColorChoice::Ansi));
+        assert!(!cli(&["a.md"]).highlight(ColorChoice::Plain));
+        assert!(!cli(&["--highlight", "never", "a.md"]).highlight(ColorChoice::Ansi));
+    }
+
+    #[test]
+    fn hyperlinks_auto_requires_a_terminal() {
+        assert!(cli(&["a.md"]).hyperlinks(TTY, ColorChoice::Ansi));
+        // `fzf --preview` captures stdout, so `auto` stays off there.
+        assert!(!cli(&["a.md"]).hyperlinks(PIPED, ColorChoice::Ansi));
     }
 
     #[test]

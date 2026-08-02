@@ -1,7 +1,7 @@
 //! Backend-neutral styling for semantic roles.
 
 use crate::cli::Theme as ThemeOption;
-use crate::layout::StyleRole;
+use crate::layout::{StyleRole, SyntaxKind};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Color {
@@ -153,11 +153,12 @@ impl Theme {
             StyleRole::CodeBorder | StyleRole::TableBorder | StyleRole::DiagramBorder => {
                 Style::fg(subtle)
             }
+            // Colour only. The underline is reserved for runs a backend has
+            // actually made clickable, so it means one thing everywhere.
             StyleRole::Link => Style::fg(match self.variant {
                 Variant::Dark => Color::BrightBlue,
                 Variant::Light => Color::Blue,
-            })
-            .underline(),
+            }),
             StyleRole::LinkTarget => Style::fg(subtle).dim(),
             StyleRole::Quote => Style::fg(match self.variant {
                 Variant::Dark => Color::BrightGreen,
@@ -172,6 +173,29 @@ impl Theme {
             StyleRole::SearchMatch => Style::plain().reverse(),
             StyleRole::InitialLine => Style::fg(Color::Yellow).dim(),
             StyleRole::Status => Style::plain().reverse(),
+            StyleRole::Syntax(kind) => self.syntax(kind),
+        }
+    }
+
+    /// Token colours stay inside the same 16-colour palette as everything else,
+    /// and stay clear of the border and link colours so a code block still
+    /// reads as one region.
+    fn syntax(&self, kind: SyntaxKind) -> Style {
+        let dark = self.variant == Variant::Dark;
+        match kind {
+            SyntaxKind::Keyword => Style::fg(Color::Magenta),
+            SyntaxKind::String => Style::fg(if dark {
+                Color::BrightGreen
+            } else {
+                Color::Green
+            }),
+            SyntaxKind::Number => Style::fg(Color::Yellow),
+            SyntaxKind::Comment => Style::fg(Color::BrightBlack).dim(),
+            SyntaxKind::Type => Style::fg(if dark { Color::BrightCyan } else { Color::Blue }),
+            SyntaxKind::Function => Style::fg(if dark { Color::BrightBlue } else { Color::Blue }),
+            // Punctuation is only nudged away from plain text, never coloured
+            // strongly enough to compete with the tokens around it.
+            SyntaxKind::Punctuation => Style::fg(Color::BrightBlack),
         }
     }
 }

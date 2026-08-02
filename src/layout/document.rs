@@ -5,6 +5,7 @@
 //! continuation lines align with content rather than with the marker.
 
 use crate::cli::MermaidMode;
+use crate::layout::highlight;
 use crate::layout::inline::{InlineContext, segments, spans};
 use crate::layout::table::layout_table;
 use crate::layout::wrap::{display_width, wrap_spans};
@@ -51,7 +52,7 @@ fn layout_block(block: &Block, width: usize, ctx: &InlineContext, out: &mut Vec<
         Block::Paragraph(p) => paragraph(p, width, ctx, out),
         Block::List(l) => list(l, width, ctx, out),
         Block::Quote(q) => quote(q, width, ctx, out),
-        Block::Code(c) => code(c, out),
+        Block::Code(c) => code(c, ctx, out),
         Block::Table(t) => out.extend(layout_table(t, width, ctx)),
         Block::HorizontalRule(range) => out.push(line(
             vec![RenderedSpan::new("─".repeat(width), StyleRole::Muted)],
@@ -409,7 +410,7 @@ fn quote(q: &QuoteBlock, width: usize, ctx: &InlineContext, out: &mut Vec<Render
     }
 }
 
-fn code(c: &CodeBlock, out: &mut Vec<RenderedLine>) {
+fn code(c: &CodeBlock, ctx: &InlineContext, out: &mut Vec<RenderedLine>) {
     let header = match &c.language {
         Some(language) => format!("╭─ {language}"),
         None => "╭─".to_string(),
@@ -419,12 +420,28 @@ fn code(c: &CodeBlock, out: &mut Vec<RenderedLine>) {
         source_range: Some(c.range),
         no_wrap: true,
     });
-    for text in c.text.lines() {
+    // Tabs are expanded first so highlighting and the drawn columns agree.
+    let body: String = c
+        .text
+        .lines()
+        .map(expand_tabs)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let highlighted = ctx
+        .highlight
+        .then_some(c.language.as_deref())
+        .flatten()
+        .and_then(|language| highlight::highlight(language, &body));
+
+    for (index, text) in body.lines().enumerate() {
+        let content = match &highlighted {
+            Some(lines) => lines[index].clone(),
+            None => vec![RenderedSpan::new(text, StyleRole::Code)],
+        };
+        let mut spans = vec![RenderedSpan::new("│ ", StyleRole::CodeBorder)];
+        spans.extend(content);
         out.push(RenderedLine {
-            spans: vec![
-                RenderedSpan::new("│ ", StyleRole::CodeBorder),
-                RenderedSpan::new(expand_tabs(text), StyleRole::Code),
-            ],
+            spans,
             source_range: Some(c.range),
             no_wrap: true,
         });

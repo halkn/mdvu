@@ -12,13 +12,34 @@ pub enum Input {
     SearchBackspace,
     SearchConfirm,
     SearchCancel,
+    OutlineMove(isize),
+    OutlineConfirm,
+    OutlineCancel,
     Ignored,
 }
 
 pub fn map(key: KeyEvent, mode: Mode) -> Input {
     match mode {
         Mode::Search => search_mode(key),
+        Mode::Outline => outline_mode(key),
         Mode::Normal => normal_mode(key),
+    }
+}
+
+fn outline_mode(key: KeyEvent) -> Input {
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        return match key.code {
+            KeyCode::Char('c') => Input::OutlineCancel,
+            _ => Input::Ignored,
+        };
+    }
+    match key.code {
+        KeyCode::Char('j') | KeyCode::Down => Input::OutlineMove(1),
+        KeyCode::Char('k') | KeyCode::Up => Input::OutlineMove(-1),
+        KeyCode::Enter => Input::OutlineConfirm,
+        // `t` toggles, so it closes the overlay it opened.
+        KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('t') => Input::OutlineCancel,
+        _ => Input::Ignored,
     }
 }
 
@@ -54,6 +75,7 @@ fn normal_mode(key: KeyEvent) -> Input {
         KeyCode::Char('l') | KeyCode::Right => Input::Navigate(Action::ScrollRight),
         KeyCode::Char('0') => Input::Navigate(Action::ResetHorizontal),
         KeyCode::Char('/') => Input::Navigate(Action::StartSearch),
+        KeyCode::Char('t') => Input::Navigate(Action::ToggleOutline),
         KeyCode::Char('n') => Input::Navigate(Action::NextMatch),
         KeyCode::Char('N') => Input::Navigate(Action::PreviousMatch),
         KeyCode::Char('q') | KeyCode::Esc => Input::Navigate(Action::Quit),
@@ -147,6 +169,36 @@ mod tests {
                 Input::SearchChar(c)
             );
         }
+    }
+
+    #[test]
+    fn t_opens_the_outline_and_the_overlay_owns_its_keys() {
+        assert_eq!(
+            normal(KeyCode::Char('t')),
+            Input::Navigate(Action::ToggleOutline)
+        );
+        // While the overlay is open, movement selects headings instead of
+        // scrolling the document.
+        assert_eq!(
+            map(key(KeyCode::Char('j')), Mode::Outline),
+            Input::OutlineMove(1)
+        );
+        assert_eq!(map(key(KeyCode::Up), Mode::Outline), Input::OutlineMove(-1));
+        assert_eq!(
+            map(key(KeyCode::Enter), Mode::Outline),
+            Input::OutlineConfirm
+        );
+        for code in [KeyCode::Esc, KeyCode::Char('q'), KeyCode::Char('t')] {
+            assert_eq!(map(key(code), Mode::Outline), Input::OutlineCancel);
+        }
+    }
+
+    #[test]
+    fn t_is_literal_text_while_searching() {
+        assert_eq!(
+            map(key(KeyCode::Char('t')), Mode::Search),
+            Input::SearchChar('t')
+        );
     }
 
     #[test]

@@ -16,9 +16,10 @@ pub fn write_document(
     document: &RenderedDocument,
     color: ColorChoice,
     theme: &Theme,
+    hyperlinks: bool,
 ) -> Result<()> {
     let result = match color {
-        ColorChoice::Ansi => ansi::write_document(out, document, theme),
+        ColorChoice::Ansi => ansi::write_document(out, document, theme, hyperlinks),
         ColorChoice::Plain => plain::write_document(out, document),
     };
     result.map_err(|source| AppError::Output { source })

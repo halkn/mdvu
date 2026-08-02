@@ -2,10 +2,10 @@
 //! surface; no Markdown parsing or diagram rendering happens per frame.
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color as RatColor, Modifier, Style as RatStyle};
 use ratatui::text::{Line as RatLine, Span as RatSpan};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Block, Clear, Paragraph};
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::layout::theme::{Color, Style, Theme};
@@ -19,6 +19,9 @@ pub struct VisibleSpan {
     pub text: String,
     pub role: StyleRole,
     pub highlighted: bool,
+    /// The destination is a real URL. Underlined, as in the stdout backend, so
+    /// it stands out from a relative path or a `#123` styled the same way.
+    pub linked: bool,
 }
 
 pub struct ViewContext<'a> {
@@ -55,6 +58,9 @@ pub fn draw(frame: &mut Frame, lines: &[RenderedLine], state: &PagerState, ctx: 
                         if span.highlighted {
                             style = ctx.theme.style(StyleRole::SearchMatch);
                         }
+                        if span.linked {
+                            style.underline = true;
+                        }
                         RatSpan::styled(span.text, convert(style))
                     })
                     .collect::<Vec<_>>(),
@@ -68,6 +74,83 @@ pub fn draw(frame: &mut Frame, lines: &[RenderedLine], state: &PagerState, ctx: 
         status_bar(state, ctx, current, status.width as usize),
         status,
     );
+    if state.mode == Mode::Outline {
+        draw_outline(frame, state, ctx, body);
+    }
+}
+
+/// Floating heading list. Drawn over the document so the reader keeps their
+/// place; `Clear` prevents the text underneath from showing through.
+fn draw_outline(frame: &mut Frame, state: &PagerState, ctx: &ViewContext<'_>, body: Rect) {
+    let items = &state.outline.items;
+    let area = overlay_area(body, items.len());
+    let inner_width = area.width.saturating_sub(2) as usize;
+    let inner_height = area.height.saturating_sub(2) as usize;
+
+    let rows: Vec<RatLine> = outline_window(state.outline.selected, items.len(), inner_height)
+        .map(|index| {
+            let item = &items[index];
+            let indent = "  ".repeat(item.level.saturating_sub(1) as usize);
+            let label = elide_end(&format!("{indent}{}", item.text), inner_width);
+            let role = if index == state.outline.selected {
+                StyleRole::SearchMatch
+            } else {
+                StyleRole::Normal
+            };
+            RatLine::from(RatSpan::styled(label, convert(ctx.theme.style(role))))
+        })
+        .collect();
+
+    let block = Block::bordered()
+        .title("Headings")
+        .border_style(convert(ctx.theme.style(StyleRole::CodeBorder)));
+    frame.render_widget(Clear, area);
+    frame.render_widget(Paragraph::new(rows).block(block), area);
+}
+
+/// Which items are on screen: the selection stays visible without moving the
+/// window more than it has to.
+fn outline_window(selected: usize, total: usize, height: usize) -> std::ops::Range<usize> {
+    if height == 0 || total == 0 {
+        return 0..0;
+    }
+    let top = selected.saturating_sub(height.saturating_sub(1));
+    let top = top.min(total.saturating_sub(height));
+    top..(top + height).min(total)
+}
+
+fn overlay_area(body: Rect, items: usize) -> Rect {
+    let width = body.width.saturating_sub(4).clamp(1, 60).max(1);
+    let height = (items as u16 + 2).min(body.height.saturating_sub(2).max(3));
+    let x = body.x + (body.width.saturating_sub(width)) / 2;
+    let y = body.y + (body.height.saturating_sub(height)) / 2;
+    Rect {
+        x,
+        y,
+        width,
+        height,
+    }
+}
+
+/// Cut a label to `budget` display columns, marking the cut with an ellipsis.
+pub fn elide_end(text: &str, budget: usize) -> String {
+    if display_width(text) <= budget {
+        return text.to_string();
+    }
+    if budget <= 1 {
+        return String::new();
+    }
+    let mut kept = String::new();
+    let mut used = 1usize; // the trailing ellipsis
+    for grapheme in text.graphemes(true) {
+        let w = display_width(grapheme);
+        if used + w > budget {
+            break;
+        }
+        used += w;
+        kept.push_str(grapheme);
+    }
+    format!("{kept}…")
 }
 
 /// Slice one rendered line to the horizontal window, splitting spans where a
@@ -106,14 +189,20 @@ pub fn visible(
             column += cell_width;
 
             let highlighted = highlights.iter().any(|(s, e)| start >= *s && start < *e);
+            let linked = span.link.is_some();
             match out.last_mut() {
-                Some(last) if last.role == span.role && last.highlighted == highlighted => {
+                Some(last)
+                    if last.role == span.role
+                        && last.highlighted == highlighted
+                        && last.linked == linked =>
+                {
                     last.text.push_str(grapheme);
                 }
                 _ => out.push(VisibleSpan {
                     text: grapheme.to_string(),
                     role: span.role,
                     highlighted,
+                    linked,
                 }),
             }
         }
@@ -309,6 +398,117 @@ mod tests {
     #[test]
     fn a_short_path_is_untouched() {
         assert_eq!(elide_start("doc.md", 20), "doc.md");
+    }
+
+    /// Draw a frame and return it as text, one string per row.
+    fn screen(state: &PagerState, lines: &[RenderedLine]) -> Vec<String> {
+        let backend = ratatui::backend::TestBackend::new(state.width as u16, 12);
+        let mut terminal = ratatui::Terminal::new(backend).expect("test backend");
+        let ctx = ViewContext {
+            title: "doc.md",
+            flavor: "gfm",
+            source_lines: lines.len(),
+            diagnostics: 0,
+            theme: Theme::new(crate::layout::theme::Variant::Dark),
+        };
+        terminal
+            .draw(|frame| draw(frame, lines, state, &ctx))
+            .expect("draw");
+        let buffer = terminal.backend().buffer();
+        (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_overlay_lists_headings_over_the_document() {
+        let lines: Vec<RenderedLine> = (0..40).map(|i| line(&format!("body {i}"))).collect();
+        let mut state = PagerState::new(lines.len(), 20, 11, 40);
+        state.set_outline(vec![
+            crate::pager::state::OutlineItem {
+                level: 1,
+                text: "Title".into(),
+                line: 0,
+            },
+            crate::pager::state::OutlineItem {
+                level: 2,
+                text: "Section".into(),
+                line: 10,
+            },
+        ]);
+
+        let closed = screen(&state, &lines).join("\n");
+        assert!(!closed.contains("Headings"));
+
+        state.apply(crate::pager::state::Action::ToggleOutline);
+        let open = screen(&state, &lines).join("\n");
+        assert!(open.contains("Headings"), "{open}");
+        assert!(open.contains("Title"), "{open}");
+        // Nested headings are indented under their parent.
+        assert!(open.contains("  Section"), "{open}");
+    }
+
+    /// The pager cannot make anything clickable, but it marks the same runs the
+    /// stdout backend would: a real URL is underlined, a link-styled run with
+    /// any other destination is not.
+    #[test]
+    fn a_url_is_underlined_in_the_pager() {
+        let line = RenderedLine {
+            spans: vec![
+                RenderedSpan::new("docs", StyleRole::Link).with_link("https://example.com"),
+                RenderedSpan::new(" local", StyleRole::Link),
+            ],
+            source_range: None,
+            no_wrap: false,
+        };
+        let lines = vec![line];
+        let state = PagerState::new(1, 20, 5, 40);
+
+        let backend = ratatui::backend::TestBackend::new(40, 3);
+        let mut terminal = ratatui::Terminal::new(backend).expect("test backend");
+        let ctx = ViewContext {
+            title: "doc.md",
+            flavor: "gfm",
+            source_lines: 1,
+            diagnostics: 0,
+            theme: Theme::new(crate::layout::theme::Variant::Dark),
+        };
+        terminal
+            .draw(|frame| draw(frame, &lines, &state, &ctx))
+            .expect("draw");
+
+        let buffer = terminal.backend().buffer();
+        let underlined = |x: u16| {
+            buffer[(x, 0)]
+                .style()
+                .add_modifier
+                .contains(Modifier::UNDERLINED)
+        };
+        assert!(underlined(0), "the URL label should be underlined");
+        assert!(!underlined(6), "a non-URL link should not be");
+    }
+
+    #[test]
+    fn the_outline_window_follows_the_selection() {
+        assert_eq!(outline_window(0, 10, 3), 0..3);
+        assert_eq!(outline_window(2, 10, 3), 0..3);
+        assert_eq!(outline_window(5, 10, 3), 3..6);
+        assert_eq!(outline_window(9, 10, 3), 7..10);
+        // A list shorter than the window is shown whole.
+        assert_eq!(outline_window(1, 2, 5), 0..2);
+        assert_eq!(outline_window(0, 0, 5), 0..0);
+    }
+
+    #[test]
+    fn a_long_heading_is_cut_at_a_character_boundary() {
+        let cut = elide_end("日本語の長い見出し", 8);
+        assert!(cut.ends_with('…'));
+        assert!(display_width(&cut) <= 8);
+        assert_eq!(elide_end("short", 20), "short");
     }
 
     #[test]
