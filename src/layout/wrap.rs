@@ -6,7 +6,9 @@
 //! pass that keeps closing punctuation off the start of a line and opening
 //! punctuation off the end.
 
+use std::rc::Rc;
 use unicode_segmentation::UnicodeSegmentation;
+
 use unicode_width::UnicodeWidthStr;
 
 use crate::layout::{RenderedSpan, StyleRole};
@@ -21,6 +23,8 @@ struct Cell {
     text: String,
     role: StyleRole,
     width: usize,
+    /// Shared so a long link does not allocate its URL once per grapheme.
+    link: Option<Rc<str>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -127,11 +131,13 @@ fn break_line(line: &mut Vec<Chunk>, next: &Chunk) -> Vec<Chunk> {
 fn cells(spans: &[RenderedSpan]) -> Vec<Cell> {
     let mut out = Vec::new();
     for span in spans {
+        let link: Option<Rc<str>> = span.link.as_deref().map(Rc::from);
         for g in span.text.graphemes(true) {
             out.push(Cell {
                 text: g.to_string(),
                 role: span.role,
                 width: display_width(g),
+                link: link.clone(),
             });
         }
     }
@@ -221,8 +227,18 @@ fn merge(cells: Vec<Cell>) -> Vec<RenderedSpan> {
     let mut spans: Vec<RenderedSpan> = Vec::new();
     for cell in cells {
         match spans.last_mut() {
-            Some(last) if last.role == cell.role => last.text.push_str(&cell.text),
-            _ => spans.push(RenderedSpan::new(cell.text, cell.role)),
+            Some(last)
+                if last.role == cell.role && last.link.as_deref() == cell.link.as_deref() =>
+            {
+                last.text.push_str(&cell.text)
+            }
+            _ => {
+                let span = RenderedSpan::new(cell.text, cell.role);
+                spans.push(match cell.link {
+                    Some(link) => span.with_link(link.as_ref()),
+                    None => span,
+                });
+            }
         }
     }
     spans
@@ -304,6 +320,29 @@ mod tests {
         let out = wrap_spans(&spans, 6);
         assert_eq!(texts(&out), vec!["hello", "world"]);
         assert_eq!(out[1][0].role, StyleRole::Strong);
+    }
+
+    #[test]
+    fn a_link_survives_a_line_break_and_does_not_bleed_into_its_neighbour() {
+        let spans = vec![
+            RenderedSpan::new("alpha beta", StyleRole::Link).with_link("https://example.com"),
+            RenderedSpan::new(" gamma", StyleRole::Link),
+        ];
+        let url = || Some("https://example.com".to_string());
+        let links = |lines: &[Vec<RenderedSpan>]| -> Vec<Vec<Option<String>>> {
+            lines
+                .iter()
+                .map(|line| line.iter().map(|s| s.link.clone()).collect())
+                .collect()
+        };
+
+        // Both halves of a broken label stay clickable.
+        let broken = wrap_spans(&spans[..1], 7);
+        assert_eq!(links(&broken), vec![vec![url()], vec![url()]]);
+
+        // The unlinked run stays a separate span even though the role matches.
+        let joined = wrap_spans(&spans, 40);
+        assert_eq!(links(&joined), vec![vec![url(), None]]);
     }
 
     #[test]

@@ -2,7 +2,11 @@ use assert_cmd::Command;
 use predicates::prelude::*;
 
 fn mdvu() -> Command {
-    Command::cargo_bin("mdvu").expect("binary should be built")
+    let mut command = Command::cargo_bin("mdvu").expect("binary should be built");
+    // Ignore whatever configuration the developer has; tests that need one
+    // point `MDVU_CONFIG` at a temporary file of their own.
+    command.env("MDVU_CONFIG", "");
+    command
 }
 
 #[test]
@@ -37,6 +41,117 @@ fn omitted_file_reads_piped_stdin() {
         .assert()
         .success()
         .stdout(predicate::str::contains("# Piped"));
+}
+
+#[test]
+fn a_config_file_supplies_defaults_that_flags_override() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("config.toml");
+    std::fs::write(&config, "width = 30\n").unwrap();
+    let source = "lorem ipsum dolor sit amet consectetur adipiscing elit sed do\n";
+
+    let widest = |args: &[&str]| -> usize {
+        let out = mdvu()
+            .env("MDVU_CONFIG", &config)
+            .args(args)
+            .write_stdin(source)
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        String::from_utf8(out)
+            .unwrap()
+            .lines()
+            .map(str::len)
+            .max()
+            .unwrap_or(0)
+    };
+
+    assert!(widest(&["--no-pager", "-"]) <= 30, "config width applies");
+    // An explicit flag wins over the file.
+    assert!(widest(&["--no-pager", "--width", "60", "-"]) > 30);
+}
+
+#[test]
+fn an_invalid_config_file_is_a_usage_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("config.toml");
+    std::fs::write(&config, "mermaid = \"svg\"\n").unwrap();
+
+    mdvu()
+        .env("MDVU_CONFIG", &config)
+        .args(["--no-pager", "-"])
+        .write_stdin("# Hi\n")
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("mermaid"));
+}
+
+#[test]
+fn an_empty_mdvu_config_disables_the_file() {
+    mdvu()
+        .env("MDVU_CONFIG", "")
+        .args(["--no-pager", "-"])
+        .write_stdin("# Hi\n")
+        .assert()
+        .success();
+}
+
+#[test]
+fn hyperlinks_always_emits_osc_8_for_http_links() {
+    mdvu()
+        .args([
+            "--no-pager",
+            "--color",
+            "always",
+            "--hyperlinks",
+            "always",
+            "-",
+        ])
+        .write_stdin("[docs](https://example.com/x) and [local](./other.md)\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "\x1b]8;;https://example.com/x\x1b\\",
+        ))
+        // A relative target is display-only and never becomes a hyperlink.
+        .stdout(predicate::str::contains("]8;;./other.md").not());
+}
+
+#[test]
+fn plain_output_stays_free_of_escapes_even_with_hyperlinks_always() {
+    mdvu()
+        .args(["--no-pager", "--plain", "--hyperlinks", "always", "-"])
+        .write_stdin("[docs](https://example.com/x)\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\x1b").not());
+}
+
+#[test]
+fn watch_requires_a_file_and_the_pager() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("doc.md");
+    std::fs::write(&path, "# Hi\n").unwrap();
+
+    // stdin cannot be followed.
+    mdvu()
+        .args(["--watch", "-"])
+        .write_stdin("# Hi\n")
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("--watch"));
+
+    mdvu().arg("--watch").write_stdin("# Hi\n").assert().code(2);
+
+    // Rendering once to stdout has nothing to re-render.
+    mdvu()
+        .args(["--watch", "--no-pager"])
+        .arg(&path)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("--no-pager"));
 }
 
 #[test]

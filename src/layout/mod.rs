@@ -2,6 +2,7 @@
 //! roles. No ratatui or ANSI types appear here; the output backends map roles.
 
 pub mod document;
+pub mod highlight;
 pub mod inline;
 pub mod table;
 pub mod theme;
@@ -38,12 +39,31 @@ pub enum StyleRole {
     SearchMatch,
     InitialLine,
     Status,
+    /// A token inside a code block. Highlighting classifies tokens; the theme
+    /// still chooses the colours.
+    Syntax(SyntaxKind),
+}
+
+/// Token classes a code block is split into. Deliberately coarse: these are the
+/// distinctions that survive a 16-colour terminal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SyntaxKind {
+    Keyword,
+    String,
+    Number,
+    Comment,
+    Type,
+    Function,
+    Punctuation,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RenderedSpan {
     pub text: String,
     pub role: StyleRole,
+    /// Absolute URL this run points at, when a backend can make it clickable.
+    /// Only the ANSI stdout backend uses it; the pager renders plain styled text.
+    pub link: Option<String>,
 }
 
 impl RenderedSpan {
@@ -51,7 +71,13 @@ impl RenderedSpan {
         Self {
             text: text.into(),
             role,
+            link: None,
         }
+    }
+
+    pub fn with_link(mut self, link: impl Into<String>) -> Self {
+        self.link = Some(link.into());
+        self
     }
 }
 

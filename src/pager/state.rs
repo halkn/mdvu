@@ -22,6 +22,7 @@ pub enum Action {
     StartSearch,
     NextMatch,
     PreviousMatch,
+    ToggleOutline,
     Quit,
 }
 
@@ -29,6 +30,46 @@ pub enum Action {
 pub enum Mode {
     Normal,
     Search,
+    Outline,
+}
+
+/// One heading in the outline overlay.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutlineItem {
+    pub level: u8,
+    pub text: String,
+    /// Rendered line the heading starts on. Resolved again after a re-layout.
+    pub line: usize,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Outline {
+    pub items: Vec<OutlineItem>,
+    pub selected: usize,
+}
+
+impl Outline {
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+
+    fn move_by(&mut self, delta: isize) {
+        if self.items.is_empty() {
+            return;
+        }
+        let last = self.items.len() - 1;
+        self.selected = self.selected.saturating_add_signed(delta).min(last);
+    }
+
+    /// Select the last heading at or above `line`, so opening the overlay lands
+    /// on the section currently being read.
+    fn select_for_line(&mut self, line: usize) {
+        self.selected = self
+            .items
+            .iter()
+            .rposition(|item| item.line <= line)
+            .unwrap_or(0);
+    }
 }
 
 /// How far a single horizontal scroll step moves.
@@ -49,6 +90,7 @@ pub struct PagerState {
     pub status: Option<String>,
     /// Rendered line opened by `--line`, highlighted until the reader moves.
     pub initial_line: Option<usize>,
+    pub outline: Outline,
 }
 
 impl PagerState {
@@ -65,6 +107,7 @@ impl PagerState {
             search: Search::default(),
             status: None,
             initial_line: None,
+            outline: Outline::default(),
         }
     }
 
@@ -92,12 +135,16 @@ impl PagerState {
     /// Apply a navigation action. Returns `false` when the pager should exit.
     pub fn apply(&mut self, action: Action) -> bool {
         // Any deliberate movement retires the `--line` highlight.
-        if !matches!(action, Action::Quit | Action::StartSearch) {
+        if !matches!(
+            action,
+            Action::Quit | Action::StartSearch | Action::ToggleOutline
+        ) {
             self.initial_line = None;
         }
         self.status = None;
         match action {
             Action::Quit => return false,
+            Action::ToggleOutline => self.toggle_outline(),
             Action::LineDown => self.scroll_down(1),
             Action::LineUp => self.scroll_up(1),
             Action::HalfPageDown => self.scroll_down(self.height.div_ceil(2)),
@@ -165,6 +212,54 @@ impl PagerState {
     pub fn cancel_search(&mut self) {
         self.mode = Mode::Normal;
         self.input.clear();
+    }
+
+    fn toggle_outline(&mut self) {
+        if self.mode == Mode::Outline {
+            self.mode = Mode::Normal;
+            return;
+        }
+        if self.outline.is_empty() {
+            self.status = Some("no headings".to_string());
+            return;
+        }
+        self.outline.select_for_line(self.top);
+        self.mode = Mode::Outline;
+    }
+
+    pub fn move_outline(&mut self, delta: isize) {
+        self.outline.move_by(delta);
+    }
+
+    /// Jump to the selected heading and close the overlay.
+    pub fn confirm_outline(&mut self) {
+        self.mode = Mode::Normal;
+        let Some(item) = self.outline.items.get(self.outline.selected) else {
+            return;
+        };
+        let line = item.line;
+        self.initial_line = None;
+        // A heading is easier to read from the top of the screen than centred.
+        self.top = line.min(self.max_top());
+    }
+
+    pub fn cancel_outline(&mut self) {
+        self.mode = Mode::Normal;
+    }
+
+    /// Rebuild the outline after a re-layout, keeping the current selection.
+    pub fn set_outline(&mut self, items: Vec<OutlineItem>) {
+        let selected = self.outline.selected;
+        self.outline = Outline {
+            selected: selected.min(items.len().saturating_sub(1)),
+            items,
+        };
+        if self.outline.is_empty() {
+            self.mode = match self.mode {
+                Mode::Outline => Mode::Normal,
+                other => other,
+            };
+        }
     }
 
     /// Bring `line` into view, centring it when it is off screen.
@@ -337,6 +432,100 @@ mod tests {
         s.cancel_search();
         assert_eq!(s.mode, Mode::Normal);
         assert!(s.input.is_empty());
+    }
+
+    fn with_outline() -> PagerState {
+        let mut s = state();
+        s.set_outline(vec![
+            OutlineItem {
+                level: 1,
+                text: "Title".into(),
+                line: 0,
+            },
+            OutlineItem {
+                level: 2,
+                text: "First".into(),
+                line: 20,
+            },
+            OutlineItem {
+                level: 2,
+                text: "Second".into(),
+                line: 60,
+            },
+        ]);
+        s
+    }
+
+    #[test]
+    fn the_outline_opens_on_the_section_being_read() {
+        let mut s = with_outline();
+        s.top = 25;
+        s.apply(Action::ToggleOutline);
+        assert_eq!(s.mode, Mode::Outline);
+        assert_eq!(s.outline.selected, 1);
+    }
+
+    #[test]
+    fn toggling_twice_returns_to_the_document() {
+        let mut s = with_outline();
+        s.apply(Action::ToggleOutline);
+        s.apply(Action::ToggleOutline);
+        assert_eq!(s.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn a_document_without_headings_reports_instead_of_opening() {
+        let mut s = state();
+        s.apply(Action::ToggleOutline);
+        assert_eq!(s.mode, Mode::Normal);
+        assert_eq!(s.status.as_deref(), Some("no headings"));
+    }
+
+    #[test]
+    fn outline_selection_clamps_at_both_ends() {
+        let mut s = with_outline();
+        s.apply(Action::ToggleOutline);
+        s.move_outline(-5);
+        assert_eq!(s.outline.selected, 0);
+        s.move_outline(9);
+        assert_eq!(s.outline.selected, 2);
+    }
+
+    #[test]
+    fn confirming_moves_the_viewport_to_the_heading() {
+        let mut s = with_outline();
+        s.apply(Action::ToggleOutline);
+        s.move_outline(1);
+        s.confirm_outline();
+        assert_eq!(s.mode, Mode::Normal);
+        assert_eq!(s.top, 20);
+    }
+
+    #[test]
+    fn cancelling_leaves_the_viewport_alone() {
+        let mut s = with_outline();
+        s.top = 40;
+        s.apply(Action::ToggleOutline);
+        s.move_outline(-2);
+        s.cancel_outline();
+        assert_eq!(s.mode, Mode::Normal);
+        assert_eq!(s.top, 40);
+    }
+
+    #[test]
+    fn a_relayout_keeps_the_selection_within_bounds() {
+        let mut s = with_outline();
+        s.apply(Action::ToggleOutline);
+        s.move_outline(2);
+        s.set_outline(vec![OutlineItem {
+            level: 1,
+            text: "Title".into(),
+            line: 3,
+        }]);
+        assert_eq!(s.outline.selected, 0);
+        // Losing every heading must not leave the overlay open.
+        s.set_outline(Vec::new());
+        assert_eq!(s.mode, Mode::Normal);
     }
 
     #[test]
