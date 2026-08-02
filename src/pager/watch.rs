@@ -125,11 +125,6 @@ mod tests {
         assert!(!debounce.ready(Instant::now(), QUIET));
     }
 
-    /// The platform watcher starts asynchronously, so a write issued in the
-    /// same instant as `Watch::new` can legitimately be missed. Real use never
-    /// hits this: the reader opens the file long before saving it.
-    const SETTLE: Duration = Duration::from_millis(1200);
-
     /// Poll like the pager does, up to `limit`.
     fn wait(watch: &mut Watch, limit: Duration) -> bool {
         let deadline = Instant::now() + limit;
@@ -142,6 +137,19 @@ mod tests {
         false
     }
 
+    /// Wait for the platform watcher to start and discard whatever it reports
+    /// on the way up.
+    ///
+    /// Two things happen here. The watcher starts asynchronously, so a write
+    /// issued in the same instant as `Watch::new` can legitimately be missed.
+    /// And the write that created the file, just before the watch began, is
+    /// still reported by some backends; without draining it the next call would
+    /// report a reload that this test never caused. Real use hits neither: the
+    /// reader opens a file long before anything saves it.
+    fn settle(watch: &mut Watch) {
+        while wait(watch, Duration::from_millis(400)) {}
+    }
+
     #[test]
     fn a_write_to_the_file_is_noticed() {
         let dir = tempfile::tempdir().unwrap();
@@ -149,7 +157,7 @@ mod tests {
         std::fs::write(&path, "# before\n").unwrap();
 
         let mut watch = Watch::new(&path).unwrap();
-        std::thread::sleep(SETTLE);
+        settle(&mut watch);
         std::fs::write(&path, "# after\n").unwrap();
         assert!(wait(&mut watch, Duration::from_secs(5)));
     }
@@ -161,7 +169,7 @@ mod tests {
         std::fs::write(&path, "# before\n").unwrap();
 
         let mut watch = Watch::new(&path).unwrap();
-        std::thread::sleep(SETTLE);
+        settle(&mut watch);
         // How editors save: write a sibling, then rename it over the target.
         let temp = dir.path().join("doc.md.tmp");
         std::fs::write(&temp, "# after\n").unwrap();
@@ -176,7 +184,7 @@ mod tests {
         std::fs::write(&path, "# doc\n").unwrap();
 
         let mut watch = Watch::new(&path).unwrap();
-        std::thread::sleep(SETTLE);
+        settle(&mut watch);
         std::fs::write(dir.path().join("other.md"), "# other\n").unwrap();
         assert!(!wait(&mut watch, Duration::from_millis(600)));
     }
