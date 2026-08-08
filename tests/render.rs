@@ -303,8 +303,59 @@ fn no_color_env_disables_ansi_under_auto() {
     assert!(!String::from_utf8_lossy(&out).contains('\x1b'));
 }
 
+/// Mirrors the JIS X 4051 sets in `src/layout/wrap.rs`. `tests/` cannot import
+/// them because the package builds a binary and no library.
+fn is_no_break_start(c: char) -> bool {
+    matches!(c,
+        '）' | '〕' | '］' | '｝' | '〉' | '》' | '」' | '』' | '】' | '｠' | '〙' | '〗' | '»'
+        | '‐' | '〜' | '！' | '？' | '‼' | '⁇' | '⁈' | '⁉' | '・' | '：' | '；'
+        | '。' | '．' | '、' | '，' | 'ゝ' | 'ゞ' | 'ヽ' | 'ヾ' | '々' | '〻' | 'ー'
+        | 'ぁ' | 'ぃ' | 'ぅ' | 'ぇ' | 'ぉ' | 'っ' | 'ゃ' | 'ゅ' | 'ょ' | 'ゎ' | 'ゕ' | 'ゖ'
+        | 'ァ' | 'ィ' | 'ゥ' | 'ェ' | 'ォ' | 'ッ' | 'ャ' | 'ュ' | 'ョ' | 'ヮ' | 'ヵ' | 'ヶ'
+        | '\u{31F0}'..='\u{31FF}'
+        | '｡' | '､' | '｣' | '\u{FF67}'..='\u{FF6F}' | 'ｰ'
+    )
+}
+
+fn is_no_break_end(c: char) -> bool {
+    matches!(
+        c,
+        '（' | '〔'
+            | '［'
+            | '｛'
+            | '〈'
+            | '《'
+            | '「'
+            | '『'
+            | '【'
+            | '｟'
+            | '〘'
+            | '〖'
+            | '«'
+            | '｢'
+    )
+}
+
+/// A line may only exceed the requested width when kinsoku left nowhere legal
+/// to break (追い込み). In that case the position where the line first runs over
+/// budget must itself be a forbidden break point.
+fn kinsoku_forbids_breaking_at_the_width(line: &str, width: usize) -> bool {
+    use unicode_width::UnicodeWidthChar;
+    let mut used = 0usize;
+    let mut previous = None;
+    for c in line.chars() {
+        let next = used + UnicodeWidthChar::width(c).unwrap_or(0);
+        if next > width {
+            return is_no_break_start(c) || previous.is_some_and(is_no_break_end);
+        }
+        used = next;
+        previous = Some(c);
+    }
+    false
+}
+
 #[test]
-fn every_rendered_line_fits_the_requested_width() {
+fn every_rendered_line_fits_the_requested_width_unless_kinsoku_forbids_it() {
     use unicode_width::UnicodeWidthStr;
     for fixture in [
         "tests/fixtures/gfm/showcase.md",
@@ -323,10 +374,11 @@ fn every_rendered_line_fits_the_requested_width() {
                 if line.starts_with('│') && !line.ends_with('│') {
                     continue;
                 }
+                let measured = UnicodeWidthStr::width(line);
                 assert!(
-                    UnicodeWidthStr::width(line) <= width,
-                    "{fixture} at width {width}: {line:?} is {} columns",
-                    UnicodeWidthStr::width(line)
+                    measured <= width || kinsoku_forbids_breaking_at_the_width(line, width),
+                    "{fixture} at width {width}: {line:?} is {measured} columns \
+                     and could have been broken within budget"
                 );
             }
         }
