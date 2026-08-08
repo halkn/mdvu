@@ -1,6 +1,7 @@
 # mdvu
 
-A fast terminal Markdown viewer for GFM and Azure DevOps Wiki Markdown, built in Rust.
+A fast terminal Markdown viewer for GFM and Azure DevOps Wiki Markdown, built in
+Rust.
 
 `mdvu` renders one Markdown file — or stdin — as styled terminal text, including
 Mermaid diagrams drawn as Unicode or ASCII art. It is built for reviewing a
@@ -305,9 +306,12 @@ Golden rendering tests drive the binary end to end and compare snapshots with
 [`insta`](https://insta.rs). Review changes with `cargo insta review`, or
 regenerate with `INSTA_UPDATE=always cargo test --test render`.
 
-Design decisions and deviations from the original plan are recorded in
-[`docs/decisions.md`](docs/decisions.md). The release procedure is in
-[`docs/releasing.md`](docs/releasing.md).
+Prebuilt binaries are published from `.github/workflows/release.yml` on a `v*`
+tag; the tag must match the `version` in `Cargo.toml`.
+
+Per-module design decisions — why kinsoku is applied while chunks are built, why
+Mermaid renders once before layout, why `--watch` watches the parent directory —
+live in [`.claude/rules/`](.claude/rules), next to the code they constrain.
 
 ## License
 

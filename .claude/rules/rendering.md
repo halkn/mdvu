@@ -1,0 +1,66 @@
+---
+paths:
+  - "src/markdown/**"
+  - "src/flavor/**"
+  - "src/diagram/**"
+  - "src/layout/**"
+  - "tests/render.rs"
+  - "tests/fixtures/**"
+  - "tests/snapshots/**"
+---
+
+# パース〜レイアウトの決定事項
+
+## IR とフレーバー
+
+`markdown/model.rs` は renderer-neutral に保つ。`ratatui` や端末型への依存をここへ持ち込まない。フレーバー差は `flavor/` の内側に閉じ、`layout/` 以降へ持ち込まない。`azure_devops.rs` は Azure 固有の記法を汎用の block / inline へ変換する役目であって、描画の分岐を作る役目ではない。
+
+- **`Block::Image` は作らない。** CommonMark では画像は inline 要素であり、段落と独立した block にすると source range と wrap 処理が二重化する。`Inline::Image` として保持し、layout 側で `[image: ...]` / `[attachment: ...]` の placeholder へ変換する。
+- すべての user-authored block は `SourceRange`（byte 範囲 + 1-based 行）を持つ。`--line` と `--watch` の読み位置保持がこれに依存するので、新しい block を足すときも必ず持たせる。
+- 未終端 `:::` container の body は **最初の空行で打ち切り**、diagnostic として報告する。markdown-it 系のように文書末尾まで伸ばすと、`::: mermaid` の閉じ忘れ 1 個で以降の本文全体が diagram body に吸収され、viewer として最も見たいものが読めなくなる。
+- 閉じマーカー探索は code fence を認識する。fence 内の `:::` はリテラルであり closer ではない。fence 内の Azure 記法も同様にリテラルのまま残す。
+- `[[_TOC_]]` は大文字小文字を区別し、最初の 1 個だけ展開する（2 個目は「無視された」と表示）。収集するのは `#` 見出しのみ。
+
+## Diagram
+
+diagram は **parse 直後・layout 前に一度だけ** render し、結果を `DiagramBlock::rendered` に保持する。frame loop と resize は renderer を呼ばない。`merman` 0.7 の `AsciiRenderOptions` は幅オプションを持たず出力幅は内容から決まるため、resize で再 render しても結果は同一になる。将来 `merman` が幅指定に対応した場合は、resize 経路から `diagram::resolve` を呼び直すだけで対応できる。
+
+- 描画に失敗した diagram は diagnostic を出してソースへフォールバックし、文書の残りは通常どおり描画され、プロセスは exit 0 のまま。unsupported な diagram family は warning、構文エラーは error として分ける。
+- `azure_compat.rs` の `RULES` は 4 件（`flowchart` root keyword、長い矢印、Font Awesome icon、label 内の HTML タグ）のまま維持する。Azure DevOps の Mermaid サポート仕様は変更が多く、追随コストが実利に見合わない。data-driven な構造は残し、必要が生じた時点で追加する。これは validator ではない。
+
+## StyleRole
+
+span は色ではなく意味的な `StyleRole` を持ち、色は `layout/theme.rs` と backend が決める。新しい表示要素を足すときは色を直書きせず、`StyleRole` を増やして theme と両 backend（`output/ansi.rs`・`pager/view.rs`）に写像を追加する。
+
+## 折り返しと禁則
+
+禁則は **`chunk()` の結合で実現し、組み上がった行への後処理はしない**。行頭禁則文字は直前の chunk へ吸収し、行末禁則文字は直後の cell を自分の chunk へ引き込む。禁則違反の位置に break opportunity が生成されないため、規則の適用順という概念自体が存在しない。
+
+後処理（追い出し・追い込み）方式には戻さない。2 つの規則が互いを打ち消し、`あいうえおかきく「け」` を幅 20 で折ると `「` が行末に露出していた。収束ループでも直せるが、入れ子リスト内では実効幅が 1 まで縮むため停止性を別途保証する必要が出る。結合方式は単一パスで完結する。
+
+- **対象は全角約物・半角カナ・繰返し記号・小書き仮名・長音のみ。** ASCII 約物は入れない。Latin は空白区切りで折るので元々ほぼ no-op である一方、ASCII を分類すると語中に break opportunity ができ、`min_unbreakable_width` が意図より小さい値を返す。
+- **幅よりも禁則を優先する。** 合法な分割位置が無ければ幅超過を許す（追い込み）。`tests/render.rs` の不変条件は「幅以内」ではなく「幅を超えるのは、その位置での分割が禁則違反になる場合だけ」。
+- 判定用の文字集合は `tests/render.rs` にも複製してある。lib target を持たないため統合テストから import できない。片方だけ直さない。
+
+## 表
+
+列の最小幅は `wrap_spans(cell, 1)` ではなく `wrap::min_unbreakable_width`（break opportunity を持たない最長 run の幅）で求める。前者は収まらない run を強制分割するため最小幅が常に 1〜2 に潰れ、語中で折れた 3 桁幅の表が出た上に vertical fallback が到達不能になっていた。
+
+## Syntax highlighting
+
+`syntect` は **パーサとしてのみ** 使い、syntect のテーマは使わない。`ParseState` + `ScopeStack` のスコープを `StyleRole::Syntax(SyntaxKind)` の 7 種へ写像し、色は `theme.rs` が決める。16 色の列挙を truecolor へ広げずに済み、dark / light 両テーマ・plain backend・snapshot の安定性がそのまま保たれる。
+
+- `SyntaxSet` は `OnceLock` で遅延初期化する。code block が無い文書では読み込まない。
+- ハイライトは **タブ展開後** の文字列に対して行う。展開前だと列がずれる。
+- スコープ解決は内側から外側へ走査し、`punctuation.definition` は透過させる。透過しないとコメントの `//` や文字列の引用符が comment / string ではなく punctuation になる。
+- 分類できなかった範囲は `StyleRole::Code` ではなく `Normal`。前者だと識別子がすべて色付きになり、分類できたトークンが埋もれる。
+
+## リンクの下線
+
+下線は「宛先が実 URL である」ことを表す。`StyleRole::Link` は色だけを持ち、下線は **`RenderedSpan::link` を持つ span**（`http` / `https`）にだけ backend 側で付ける。リンクとして色が付く範囲（相対パス・`.attachments`・`#123`・`@alias`）は実 URL より広いため、すべて同じ下線だと区別できない。`output/ansi.rs` と `pager/view.rs` の両方で同じ条件を使い、`--hyperlinks` の有無で見た目は変わらない。
+
+リンク化するのは `http` / `https` のみ。制御文字を含む dest はエスケープ列を閉じて任意の OSC を注入できるため、2083 バイト超の dest は壊れた入力である可能性が高いため、どちらもリンク化しない。
+
+## Snapshot
+
+レイアウトに影響する変更は golden snapshot が動く。`cargo insta review` で差分を目視し、意図した変化だけを受け入れる。新しい fixture は幅 40 / 80 / 120 の組み合わせで `tests/render.rs` に登録する。
