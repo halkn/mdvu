@@ -20,6 +20,9 @@ pub struct InlineContext {
     /// Whether code blocks are split into syntax roles. Off for plain output,
     /// where every role would collapse to the same bytes anyway.
     pub highlight: bool,
+    /// What the terminal can draw images with, when it can. `None` keeps every
+    /// image a text placeholder.
+    pub images: Option<crate::image::ImageSupport>,
 }
 
 /// Extensions rendered as an image placeholder rather than a generic attachment.

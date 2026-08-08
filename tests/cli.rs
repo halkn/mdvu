@@ -249,3 +249,130 @@ fn help_and_version_succeed() {
         .success()
         .stdout(predicate::str::contains("mdvu"));
 }
+
+/// The fixture document holding a standalone image, with a real PNG beside it.
+const WITH_IMAGE: &str = "tests/fixtures/gfm/showcase.md";
+
+#[test]
+fn a_named_protocol_draws_a_local_image() {
+    let out = mdvu()
+        .args([
+            "--no-pager",
+            "--color",
+            "always",
+            "--images",
+            "kitty",
+            "--flavor",
+            "gfm",
+            WITH_IMAGE,
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let out = String::from_utf8(out).expect("output is utf-8");
+    assert!(
+        out.contains("\x1b_Ga=T,f=100"),
+        "expected a kitty placement"
+    );
+    // The picture replaces the placeholder rather than joining it.
+    assert!(!out.contains("[image: architecture diagram]"));
+
+    let iterm = mdvu()
+        .args([
+            "--no-pager",
+            "--color",
+            "always",
+            "--images",
+            "iterm2",
+            "--flavor",
+            "gfm",
+            WITH_IMAGE,
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let iterm = String::from_utf8(iterm).expect("output is utf-8");
+    assert!(iterm.contains("\x1b]1337;File=inline=1;"));
+}
+
+/// `auto` needs a terminal: a captured stdout, such as an `fzf --preview` pane,
+/// would show the escape bytes rather than the picture.
+#[test]
+fn images_are_off_when_stdout_is_not_a_terminal() {
+    mdvu()
+        .args([
+            "--no-pager",
+            "--color",
+            "always",
+            "--flavor",
+            "gfm",
+            WITH_IMAGE,
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("[image: architecture diagram]"));
+}
+
+/// Images are escape sequences, so the plain contract covers them too.
+#[test]
+fn plain_output_never_carries_an_image() {
+    let out = mdvu()
+        .args([
+            "--no-pager",
+            "--plain",
+            "--images",
+            "kitty",
+            "--flavor",
+            "gfm",
+            WITH_IMAGE,
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let out = String::from_utf8(out).expect("output is utf-8");
+    assert!(!out.contains('\x1b'));
+    assert!(out.contains("[image: architecture diagram]"));
+}
+
+#[test]
+fn an_image_outside_the_document_directory_keeps_its_placeholder() {
+    let dir = tempfile::tempdir().unwrap();
+    let outside = dir.path().join("outside.png");
+    std::fs::copy("tests/fixtures/gfm/.attachments/architecture.png", &outside).unwrap();
+    let doc = dir.path().join("doc").join("page.md");
+    std::fs::create_dir_all(doc.parent().unwrap()).unwrap();
+    std::fs::write(&doc, "![a](../outside.png)\n").unwrap();
+
+    let out = mdvu()
+        .args(["--no-pager", "--color", "always", "--images", "kitty"])
+        .arg(&doc)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let out = String::from_utf8(out).expect("output is utf-8");
+    assert!(!out.contains("\x1b_G"));
+    assert!(out.contains("[image: a]"));
+}
+
+#[test]
+fn a_document_on_stdin_has_no_directory_to_read_images_from() {
+    let out = mdvu()
+        .args(["--no-pager", "--color", "always", "--images", "kitty", "-"])
+        .write_stdin("![a](tests/fixtures/gfm/.attachments/architecture.png)\n")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let out = String::from_utf8(out).expect("output is utf-8");
+    assert!(!out.contains("\x1b_G"));
+    assert!(out.contains("[image: a]"));
+}

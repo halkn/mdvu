@@ -4,6 +4,8 @@
 //! a prefix, so quote borders and list indentation compose naturally and
 //! continuation lines align with content rather than with the marker.
 
+use std::rc::Rc;
+
 use crate::cli::MermaidMode;
 use crate::layout::highlight;
 use crate::layout::inline::{InlineContext, segments, spans};
@@ -11,8 +13,8 @@ use crate::layout::table::layout_table;
 use crate::layout::wrap::{display_width, wrap_spans};
 use crate::layout::{LayoutOptions, RenderedDocument, RenderedLine, RenderedSpan, StyleRole};
 use crate::markdown::model::{
-    Block, CodeBlock, DetailsBlock, DiagramBlock, Document, FootnoteBlock, HeadingBlock, ListBlock,
-    ParagraphBlock, PlaceholderBlock, QuoteBlock, RawHtmlBlock, TocBlock,
+    Block, CodeBlock, DetailsBlock, DiagramBlock, Document, FootnoteBlock, HeadingBlock, Inline,
+    ListBlock, ParagraphBlock, PlaceholderBlock, QuoteBlock, RawHtmlBlock, TocBlock,
 };
 use crate::source::SourceRange;
 
@@ -141,6 +143,7 @@ fn details(d: &DetailsBlock, width: usize, ctx: &InlineContext, out: &mut Vec<Re
             spans: all,
             source_range: rendered.source_range.or(Some(d.range)),
             no_wrap: rendered.no_wrap,
+            image: rendered.image,
         });
     }
 }
@@ -172,6 +175,7 @@ fn placeholder(p: &PlaceholderBlock, width: usize, out: &mut Vec<RenderedLine>) 
                 ],
                 source_range: Some(p.range),
                 no_wrap: true,
+                image: None,
             });
         }
     }
@@ -226,6 +230,7 @@ fn diagram(d: &DiagramBlock, width: usize, ctx: &InlineContext, out: &mut Vec<Re
             ],
             source_range: Some(d.range),
             no_wrap: true,
+            image: None,
         });
     }
     out.push(preformatted(
@@ -261,6 +266,7 @@ fn error_fallback(d: &DiagramBlock, message: &str, width: usize, out: &mut Vec<R
             spans: all,
             source_range: Some(d.range),
             no_wrap: false,
+            image: None,
         });
     }
     out.push(preformatted(
@@ -277,6 +283,7 @@ fn error_fallback(d: &DiagramBlock, message: &str, width: usize, out: &mut Vec<R
             ],
             source_range: Some(d.range),
             no_wrap: true,
+            image: None,
         });
     }
     out.push(preformatted(
@@ -292,6 +299,7 @@ fn preformatted(text: String, role: StyleRole, d: &DiagramBlock, no_wrap: bool) 
         spans: vec![RenderedSpan::new(text, role)],
         source_range: Some(d.range),
         no_wrap,
+        image: None,
     }
 }
 
@@ -329,11 +337,41 @@ fn heading(h: &HeadingBlock, width: usize, ctx: &InlineContext, out: &mut Vec<Re
 }
 
 fn paragraph(p: &ParagraphBlock, width: usize, ctx: &InlineContext, out: &mut Vec<RenderedLine>) {
+    if let Some(placement) = drawable_image(p, width, ctx) {
+        // The image covers cells the backend paints over; the reserved lines
+        // stay blank and carry the paragraph's range so `--line` and `--watch`
+        // still find their way back to the source.
+        for row in 0..placement.rows {
+            out.push(RenderedLine {
+                spans: Vec::new(),
+                source_range: Some(p.range),
+                no_wrap: true,
+                image: (row == 0).then(|| Rc::clone(&placement)),
+            });
+        }
+        return;
+    }
     for segment in segments(&p.content, ctx) {
         for line_spans in wrap_spans(&segment, width) {
             out.push(line(line_spans, p.range));
         }
     }
+}
+
+/// A paragraph whose whole content is one image, resolved against the terminal.
+///
+/// Only this shape becomes a picture. An image sitting among words would need a
+/// multi-row box inside a wrapped line, so it keeps its text placeholder.
+fn drawable_image(
+    p: &ParagraphBlock,
+    width: usize,
+    ctx: &InlineContext,
+) -> Option<Rc<crate::image::Placement>> {
+    let support = ctx.images?;
+    let [Inline::Image(image)] = p.content.as_slice() else {
+        return None;
+    };
+    crate::image::resolve(&image.dest, ctx.base_dir.as_deref(), support, width)
 }
 
 fn list(l: &ListBlock, width: usize, ctx: &InlineContext, out: &mut Vec<RenderedLine>) {
@@ -384,6 +422,7 @@ fn list(l: &ListBlock, width: usize, ctx: &InlineContext, out: &mut Vec<Rendered
                 spans: all,
                 source_range: rendered.source_range.or(Some(item.range)),
                 no_wrap: rendered.no_wrap,
+                image: rendered.image,
             });
         }
     }
@@ -406,6 +445,7 @@ fn quote(q: &QuoteBlock, width: usize, ctx: &InlineContext, out: &mut Vec<Render
             spans: all,
             source_range: rendered.source_range.or(Some(q.range)),
             no_wrap: rendered.no_wrap,
+            image: rendered.image,
         });
     }
 }
@@ -419,6 +459,7 @@ fn code(c: &CodeBlock, ctx: &InlineContext, out: &mut Vec<RenderedLine>) {
         spans: vec![RenderedSpan::new(header, StyleRole::CodeBorder)],
         source_range: Some(c.range),
         no_wrap: true,
+        image: None,
     });
     // Tabs are expanded first so highlighting and the drawn columns agree.
     let body: String = c
@@ -444,12 +485,14 @@ fn code(c: &CodeBlock, ctx: &InlineContext, out: &mut Vec<RenderedLine>) {
             spans,
             source_range: Some(c.range),
             no_wrap: true,
+            image: None,
         });
     }
     out.push(RenderedLine {
         spans: vec![RenderedSpan::new("╰─", StyleRole::CodeBorder)],
         source_range: Some(c.range),
         no_wrap: true,
+        image: None,
     });
 }
 
@@ -475,6 +518,7 @@ fn footnote(f: &FootnoteBlock, width: usize, ctx: &InlineContext, out: &mut Vec<
             spans: all,
             source_range: rendered.source_range.or(Some(f.range)),
             no_wrap: rendered.no_wrap,
+            image: rendered.image,
         });
     }
 }
@@ -485,6 +529,7 @@ fn raw_html(h: &RawHtmlBlock, out: &mut Vec<RenderedLine>) {
             spans: vec![RenderedSpan::new(expand_tabs(text), StyleRole::Muted)],
             source_range: Some(h.range),
             no_wrap: true,
+            image: None,
         });
     }
 }
@@ -494,6 +539,7 @@ fn line(spans: Vec<RenderedSpan>, range: SourceRange) -> RenderedLine {
         spans,
         source_range: Some(range),
         no_wrap: false,
+        image: None,
     }
 }
 
@@ -513,4 +559,99 @@ fn expand_tabs(text: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cli::Flavor;
+    use crate::image::{CellSize, ImageSupport, Protocol};
+    use crate::source::SourceText;
+    use std::io::Write;
+    use std::path::Path;
+
+    fn png(dir: &Path, name: &str, width: u32, height: u32) {
+        let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec();
+        bytes.extend_from_slice(&13u32.to_be_bytes());
+        bytes.extend_from_slice(b"IHDR");
+        bytes.extend_from_slice(&width.to_be_bytes());
+        bytes.extend_from_slice(&height.to_be_bytes());
+        bytes.extend_from_slice(&[8, 6, 0, 0, 0]);
+        std::fs::File::create(dir.join(name))
+            .expect("creating the fixture")
+            .write_all(&bytes)
+            .expect("writing the fixture");
+    }
+
+    fn context(base_dir: &Path, images: bool) -> InlineContext {
+        InlineContext {
+            base_dir: Some(base_dir.to_path_buf()),
+            images: images.then_some(ImageSupport {
+                protocol: Protocol::Kitty,
+                cell: CellSize {
+                    width: 10,
+                    height: 20,
+                },
+            }),
+            ..InlineContext::default()
+        }
+    }
+
+    fn render(markdown: &str, ctx: &InlineContext) -> RenderedDocument {
+        let document = crate::flavor::parse(SourceText::new(markdown.to_string()), Flavor::Gfm);
+        layout_document(&document, LayoutOptions::new(80), ctx)
+    }
+
+    #[test]
+    fn a_paragraph_holding_only_an_image_becomes_reserved_lines() {
+        let dir = tempfile::tempdir().expect("temporary directory");
+        png(dir.path(), "a.png", 200, 100);
+        let rendered = render("![alt](a.png)\n", &context(dir.path(), true));
+
+        assert_eq!(rendered.lines.len(), 5);
+        let placement = rendered.lines[0]
+            .image
+            .as_ref()
+            .expect("the first line carries the image");
+        assert_eq!((placement.cols, placement.rows), (20, 5));
+        // The rest of the block is reserved space, and every line points back
+        // at the source so `--line` and `--watch` still work.
+        assert!(rendered.lines[1..].iter().all(|l| l.image.is_none()));
+        assert!(rendered.lines.iter().all(|l| l.source_range.is_some()));
+        assert!(rendered.lines.iter().all(|l| l.text().is_empty()));
+    }
+
+    #[test]
+    fn an_image_among_words_keeps_its_placeholder() {
+        let dir = tempfile::tempdir().expect("temporary directory");
+        png(dir.path(), "a.png", 200, 100);
+        let rendered = render("see ![alt](a.png) here\n", &context(dir.path(), true));
+
+        assert!(rendered.lines.iter().all(|l| l.image.is_none()));
+        assert!(rendered.lines[0].text().contains("[image: alt]"));
+    }
+
+    /// Without a protocol the layout is byte for byte what it was before
+    /// images existed, which is what the golden snapshots assert.
+    #[test]
+    fn a_terminal_without_images_gets_the_placeholder_layout() {
+        let dir = tempfile::tempdir().expect("temporary directory");
+        png(dir.path(), "a.png", 200, 100);
+        let rendered = render("![alt](a.png)\n", &context(dir.path(), false));
+
+        assert_eq!(rendered.lines.len(), 1);
+        assert!(rendered.lines[0].image.is_none());
+        assert!(rendered.lines[0].text().starts_with("[image: alt]"));
+    }
+
+    #[test]
+    fn an_image_inside_a_quote_keeps_its_border_and_its_picture() {
+        let dir = tempfile::tempdir().expect("temporary directory");
+        png(dir.path(), "a.png", 200, 100);
+        let rendered = render("> ![alt](a.png)\n", &context(dir.path(), true));
+
+        assert!(rendered.lines[0].image.is_some());
+        // The border is what the pager measures to place the image.
+        assert_eq!(rendered.lines[0].text(), "│ ");
+    }
 }

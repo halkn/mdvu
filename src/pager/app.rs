@@ -19,6 +19,7 @@ use crate::layout::{LayoutOptions, RenderedDocument, layout_document};
 use crate::markdown::model::{Document, headings};
 use crate::pager::TerminalGuard;
 use crate::pager::event::{Input, map};
+use crate::pager::images::{self, Placed};
 use crate::pager::state::{OutlineItem, PagerState, rendered_line_for_source, source_line_at};
 use crate::pager::view::{ViewContext, draw, widest_line};
 use crate::pager::watch::Watch;
@@ -107,6 +108,9 @@ fn event_loop(input: PagerInput) -> Result<()> {
     );
 
     state.set_outline(outline(&document, &rendered));
+    // What the terminal is currently showing, so an unchanged frame does not
+    // re-send image payloads that can be megabytes each.
+    let mut shown: Vec<Placed> = Vec::new();
 
     if let Some(source_line) = start_line
         && let Some(index) = rendered_line_for_source(&rendered.lines, source_line)
@@ -116,6 +120,22 @@ fn event_loop(input: PagerInput) -> Result<()> {
     }
 
     loop {
+        let wanted = images::visible(
+            &rendered.lines,
+            state.top,
+            state.left,
+            state.width,
+            state.height,
+        );
+        let images_changed = wanted != shown;
+        // Kitty removes its own placements. iTerm2 draws into the cells, so the
+        // only way back is to make `ratatui` repaint the whole screen.
+        if images_changed && !images::erase(&shown)? {
+            terminal
+                .clear()
+                .map_err(|source| AppError::Terminal { source })?;
+        }
+
         let ctx = ViewContext {
             title: &title,
             flavor,
@@ -126,6 +146,10 @@ fn event_loop(input: PagerInput) -> Result<()> {
         terminal
             .draw(|frame| draw(frame, &rendered.lines, &state, &ctx))
             .map_err(|source| AppError::Terminal { source })?;
+        if images_changed {
+            images::draw(&wanted)?;
+            shown = wanted;
+        }
 
         // Reloading happens between frames, never during one, so the frame loop
         // still does no parsing.
@@ -154,6 +178,8 @@ fn event_loop(input: PagerInput) -> Result<()> {
         match event::read().map_err(|source| AppError::Terminal { source })? {
             Event::Key(key) if key.is_press() => {
                 if !handle_key(&mut state, key, &texts) {
+                    // Leave no image behind on the screen the reader returns to.
+                    images::erase(&shown)?;
                     return Ok(());
                 }
             }

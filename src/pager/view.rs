@@ -346,6 +346,7 @@ mod tests {
             spans: vec![RenderedSpan::new(text, StyleRole::Normal)],
             source_range: None,
             no_wrap: false,
+            image: None,
         }
     }
 
@@ -464,6 +465,7 @@ mod tests {
             ],
             source_range: None,
             no_wrap: false,
+            image: None,
         };
         let lines = vec![line];
         let state = PagerState::new(1, 20, 5, 40);

@@ -168,6 +168,7 @@ fn border_line(
         spans: vec![RenderedSpan::new(text, StyleRole::TableBorder)],
         source_range: Some(range),
         no_wrap: true,
+        image: None,
     }
 }
 
@@ -210,6 +211,7 @@ fn render_row(
                 spans,
                 source_range: Some(range),
                 no_wrap: true,
+                image: None,
             }
         })
         .collect()
@@ -290,6 +292,7 @@ fn vertical_fallback(
             )],
             source_range: Some(range),
             no_wrap: false,
+            image: None,
         });
         for (i, cell) in row.iter().enumerate().take(columns) {
             let label = format!("  {}: ", headers[i]);
@@ -314,6 +317,7 @@ fn vertical_fallback(
                     )],
                     source_range: Some(range),
                     no_wrap: false,
+                    image: None,
                 });
             }
             let indent = " ".repeat(indent_width);
@@ -329,6 +333,7 @@ fn vertical_fallback(
                     spans,
                     source_range: Some(range),
                     no_wrap: false,
+                    image: None,
                 });
             }
         }

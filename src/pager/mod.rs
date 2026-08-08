@@ -1,5 +1,6 @@
 pub mod app;
 pub mod event;
+pub mod images;
 pub mod search;
 pub mod state;
 pub mod view;

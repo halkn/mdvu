@@ -17,7 +17,14 @@ pub fn write_document(
     hyperlinks: bool,
 ) -> std::io::Result<()> {
     for line in &document.lines {
-        for span in trimmed(line) {
+        // An image starts where the line's own text ends, so an indent or a
+        // quote border still lines up. Trailing spaces are part of that indent
+        // here and are kept.
+        let spans = match line.image {
+            Some(_) => line.spans.clone(),
+            None => trimmed(line),
+        };
+        for span in spans {
             let link = span.link.as_deref().filter(|_| hyperlinks);
             if let Some(url) = link {
                 write!(out, "{LINK_OPEN}{url}{ST}")?;
@@ -37,6 +44,12 @@ pub fn write_document(
             if link.is_some() {
                 write!(out, "{LINK_OPEN}{ST}")?;
             }
+        }
+        // The image is drawn at the cursor without moving it, and the blank
+        // lines the layout reserved below scroll it into view like any other
+        // content.
+        if let Some(image) = &line.image {
+            out.write_all(image.escape().as_bytes())?;
         }
         out.write_all(b"\n")?;
     }

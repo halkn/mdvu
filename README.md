@@ -16,8 +16,11 @@ browser, Node.js or any external command.
   `<details>`, work item references and attachments are understood, not shown as
   stray syntax.
 - **Mermaid without a runtime.** Diagrams are parsed and drawn by
-  [`merman`](https://docs.rs/merman/) as terminal text. There is no Chromium, no
-  `mmdc`, no image protocol.
+  [`merman`](https://docs.rs/merman/) as terminal text. There is no Chromium and
+  no `mmdc`.
+- **Local images, where the terminal can show them.** A PNG, JPEG, GIF or WebP
+  next to the document is drawn inline with the kitty or iTerm2 graphics
+  protocol. No decoder, no network, no external command.
 - **Japanese text is not an afterthought.** Wrapping uses Unicode display width
   and grapheme boundaries, with JIS X 4051 kinsoku so `。`, `ー` and a small
   kana never start a line and `「` never ends one.
@@ -84,6 +87,7 @@ mdvu --no-pager --plain doc.md       # unstyled text to stdout
 | `--color <WHEN>` | `auto`, `always`, `never` (default: `auto`) |
 | `--hyperlinks <WHEN>` | OSC 8 links in stdout output: `auto`, `always`, `never` (default: `auto`) |
 | `--highlight <WHEN>` | Syntax highlighting for code blocks: `auto`, `never` (default: `auto`) |
+| `--images <WHEN>` | Inline images: `auto`, `kitty`, `iterm2`, `never` (default: `auto`) |
 | `--watch` | Re-render when the file changes on disk (pager only) |
 | `--plain` | Alias for `--color never` |
 
@@ -105,6 +109,9 @@ only `http` and `https` targets are underlined, so they stand out from a
 relative path, a `#123` or an `@alias` styled the same way. The mark is the same
 in the pager and on stdout; where hyperlinks are emitted, an underlined label is
 also the one the terminal can open.
+
+`--images` draws local images with a terminal graphics protocol; see
+[Images](#images) below.
 
 `--watch` follows the file while something else edits it — a coding agent, or
 your editor in another window — and re-renders on every save. The reading
@@ -129,6 +136,7 @@ theme = "dark"
 color = "auto"
 hyperlinks = "always"
 highlight = "auto"
+images = "auto"
 width = 100
 watch = true
 ```
@@ -191,7 +199,9 @@ integration.
 Rendered: ATX headings, paragraphs, bold, italic, strikethrough, inline code,
 fenced and indented code blocks, ordered and unordered lists, nested lists, task
 lists, block quotes, nested quotes, horizontal rules, GFM tables, links,
-autolinks, images as text placeholders, footnotes, and hard and soft breaks.
+autolinks, images, footnotes, and hard and soft breaks. An image standing alone
+in its paragraph is drawn inline where the terminal supports it, and is a text
+placeholder everywhere else; see [Images](#images).
 
 Tables get column widths from intrinsic minimum and preferred widths, measured in
 display columns. When even the minimum widths do not fit, the table becomes a
@@ -257,12 +267,51 @@ Under the Azure flavor, `mdvu` warns about four documented Azure DevOps
 incompatibilities: the `flowchart` root keyword, long arrows such as `---->`,
 Font Awesome icons, and HTML tags inside labels. A flagged diagram still renders.
 
+## Images
+
+An image that is the whole of its paragraph is drawn inline when the terminal
+supports it. Everything else about it stays as before: an image among words
+keeps its `[image: ...]` placeholder, because a picture there would need a
+multi-row box inside a wrapped line.
+
+The file's own bytes are handed to the terminal, which decodes them, so PNG,
+JPEG, GIF and WebP work and nothing is decoded inside `mdvu`. SVG is not drawn:
+no terminal renders it.
+
+`--images auto` reads the environment only — `TERM`, `TERM_PROGRAM`,
+`KITTY_WINDOW_ID`, `KONSOLE_VERSION` — and never asks the terminal what it
+supports, since that would mean writing to the tty and waiting for an answer.
+kitty, Ghostty, WezTerm and Konsole get the kitty protocol; iTerm2 gets its own.
+Inside `tmux`, `auto` stays off, because passthrough depends on the outer
+terminal and the tmux version; `--images kitty` forces it. Images are escape
+sequences, so `--plain`, `--color never` and `NO_COLOR` suppress them, and
+`auto` requires stdout to be a terminal.
+
+Which files may be read is deliberately narrow. `mdvu` opens nothing else in a
+document: links, attachments and other destinations are shown, never followed.
+An image is drawn only when all of the following hold, and otherwise keeps its
+placeholder without an error:
+
+- the document came from a file, so there is a directory to resolve against
+- the destination is a local path with no URL scheme; `http`, `https` and `data`
+  are never fetched, and `mdvu` makes no network requests
+- the resolved path stays inside the document's directory, after both sides are
+  canonicalised, so `../` and a symlink pointing outside are both refused
+- the extension is `png`, `jpg`, `jpeg`, `gif` or `webp`, and the file's leading
+  bytes agree with it
+- the file is at most 10 MiB
+
+An image is scaled to fit the text width and capped at 20 rows, keeping its
+aspect ratio. In the pager it is drawn only while it fits on screen whole: half
+a picture over the status bar is worse than none, and neither protocol can crop
+a placement without sending it again.
+
 ## Comparison
 
 | Tool | Focus | How `mdvu` differs |
 |:-----|:------|:-------------------|
 | [Glow](https://github.com/charmbracelet/glow) | General Markdown reader with a file browser | `mdvu` is review-oriented, single-file, source-line aware and Azure DevOps aware |
-| [mcat](https://github.com/Skardyy/mcat) | Many file formats in the terminal | `mdvu` is Markdown only; no PDF, DOCX, HTML, image or video input |
+| [mcat](https://github.com/Skardyy/mcat) | Many file formats in the terminal | `mdvu` is Markdown only; no PDF, DOCX, HTML, image or video input, and images are drawn only as part of a document |
 | [md-render.nvim](https://github.com/delphinus/md-render.nvim) | High quality Markdown inside Neovim | `mdvu` is a standalone CLI with no editor dependency |
 | [DocSail](https://github.com/halkn/docsail) | Markdown workspace viewer with a file tree | `mdvu` shows one file or stdin and has no workspace navigation |
 
@@ -274,6 +323,12 @@ Font Awesome icons, and HTML tags inside labels. A flagged diagram still renders
   Japanese labels can have misaligned borders even though the labels are correct.
 - The Azure DevOps compatibility check covers four known rules only. It is not a
   validator; a clean run does not mean Azure DevOps will accept the diagram.
+- Inline images need kitty or iTerm2 graphics. Sixel is not implemented, so
+  foot, xterm and Windows Terminal show placeholders. Detection is by
+  environment variable, so an unlisted terminal needs `--images` naming the
+  protocol.
+- An image is drawn only when its paragraph holds nothing else, and only from
+  the document's own directory. SVG is never drawn.
 - Kinsoku covers the JIS X 4051 CJK and halfwidth katakana classes. ASCII
   punctuation is excluded, and there is no phrase-level segmentation, so a line
   can still break in the middle of a Japanese word.
