@@ -18,7 +18,8 @@ browser, Node.js or any external command.
   [`merman`](https://docs.rs/merman/) as terminal text. There is no Chromium, no
   `mmdc`, no image protocol.
 - **Japanese text is not an afterthought.** Wrapping uses Unicode display width
-  and grapheme boundaries, with best-effort kinsoku so `。` does not start a line.
+  and grapheme boundaries, with JIS X 4051 kinsoku so `。`, `ー` and a small
+  kana never start a line and `「` never ends one.
 - **Composes with your tools.** `fzf`, `fd`, `rg` and Git stay external.
 
 > `mdvu` is more review-oriented than Glow, more Markdown-specific than mcat, and
@@ -272,7 +273,13 @@ Font Awesome icons, and HTML tags inside labels. A flagged diagram still renders
   Japanese labels can have misaligned borders even though the labels are correct.
 - The Azure DevOps compatibility check covers four known rules only. It is not a
   validator; a clean run does not mean Azure DevOps will accept the diagram.
-- Kinsoku handling is best effort and does not implement JIS X 4051.
+- Kinsoku covers the JIS X 4051 CJK and halfwidth katakana classes. ASCII
+  punctuation is excluded, and there is no phrase-level segmentation, so a line
+  can still break in the middle of a Japanese word.
+- Kinsoku wins over `--width`. A run with no legal break point inside it is kept
+  whole and its line runs past the requested width rather than breaking where
+  kinsoku forbids. This needs a very narrow width or a long run of punctuation
+  to happen, but a captured preview such as `fzf` will show the longer line.
 - OSC 8 hyperlinks are emitted by the stdout backend only. In the pager a URL is
   underlined but not clickable: `ratatui` cells carry no hyperlink attribute.
 - `--watch` follows one file. A document that includes others is not tracked,
