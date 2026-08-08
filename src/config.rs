@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use clap::ValueEnum;
 use serde::Deserialize;
 
-use crate::cli::{ColorWhen, Flavor, HighlightWhen, HyperlinkWhen, MermaidMode, Theme};
+use crate::cli::{ColorWhen, Flavor, HighlightWhen, HyperlinkWhen, ImagesWhen, MermaidMode, Theme};
 
 /// Overrides an absent flag would otherwise take from its built-in default.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -23,6 +23,7 @@ pub struct Config {
     pub color: Option<ColorWhen>,
     pub hyperlinks: Option<HyperlinkWhen>,
     pub highlight: Option<HighlightWhen>,
+    pub images: Option<ImagesWhen>,
     pub width: Option<u16>,
     pub watch: Option<bool>,
 }
@@ -38,6 +39,7 @@ struct Raw {
     color: Option<String>,
     hyperlinks: Option<String>,
     highlight: Option<String>,
+    images: Option<String>,
     width: Option<i64>,
     watch: Option<bool>,
 }
@@ -90,6 +92,7 @@ pub fn parse(text: &str) -> Result<Config, String> {
         color: value(raw.color.as_deref(), "color")?,
         hyperlinks: value(raw.hyperlinks.as_deref(), "hyperlinks")?,
         highlight: value(raw.highlight.as_deref(), "highlight")?,
+        images: value(raw.images.as_deref(), "images")?,
         width: width(raw.width)?,
         watch: raw.watch,
     })
@@ -167,6 +170,7 @@ mod tests {
             color = "always"
             hyperlinks = "never"
             highlight = "never"
+            images = "kitty"
             width = 100
             "#,
         )
@@ -180,6 +184,7 @@ mod tests {
                 color: Some(ColorWhen::Always),
                 hyperlinks: Some(HyperlinkWhen::Never),
                 highlight: Some(HighlightWhen::Never),
+                images: Some(ImagesWhen::Kitty),
                 width: Some(100),
                 watch: None,
             }

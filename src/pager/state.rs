@@ -337,6 +337,7 @@ mod tests {
                 line_end,
             }),
             no_wrap: false,
+            image: None,
         }
     }
 

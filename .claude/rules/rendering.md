@@ -15,7 +15,7 @@ paths:
 
 `markdown/model.rs` は renderer-neutral に保つ。`ratatui` や端末型への依存をここへ持ち込まない。フレーバー差は `flavor/` の内側に閉じ、`layout/` 以降へ持ち込まない。`azure_devops.rs` は Azure 固有の記法を汎用の block / inline へ変換する役目であって、描画の分岐を作る役目ではない。
 
-- **`Block::Image` は作らない。** CommonMark では画像は inline 要素であり、段落と独立した block にすると source range と wrap 処理が二重化する。`Inline::Image` として保持し、layout 側で `[image: ...]` / `[attachment: ...]` の placeholder へ変換する。
+- **`Block::Image` は作らない。** CommonMark では画像は inline 要素であり、段落と独立した block にすると source range と wrap 処理が二重化する。`Inline::Image` として保持し、layout 側で `[image: ...]` / `[attachment: ...]` の placeholder か、描画領域へ変換する。
 - すべての user-authored block は `SourceRange`（byte 範囲 + 1-based 行）を持つ。`--line` と `--watch` の読み位置保持がこれに依存するので、新しい block を足すときも必ず持たせる。
 - 未終端 `:::` container の body は **最初の空行で打ち切り**、diagnostic として報告する。markdown-it 系のように文書末尾まで伸ばすと、`::: mermaid` の閉じ忘れ 1 個で以降の本文全体が diagram body に吸収され、viewer として最も見たいものが読めなくなる。
 - 閉じマーカー探索は code fence を認識する。fence 内の `:::` はリテラルであり closer ではない。fence 内の Azure 記法も同様にリテラルのまま残す。
@@ -27,6 +27,17 @@ diagram は **parse 直後・layout 前に一度だけ** render し、結果を 
 
 - 描画に失敗した diagram は diagnostic を出してソースへフォールバックし、文書の残りは通常どおり描画され、プロセスは exit 0 のまま。unsupported な diagram family は warning、構文エラーは error として分ける。
 - `azure_compat.rs` の `RULES` は 4 件（`flowchart` root keyword、長い矢印、Font Awesome icon、label 内の HTML タグ）のまま維持する。Azure DevOps の Mermaid サポート仕様は変更が多く、追随コストが実利に見合わない。data-driven な構造は残し、必要が生じた時点で追加する。これは validator ではない。
+
+## インライン画像
+
+端末が描けるときだけ、**中身が `Inline::Image` 1 つだけの段落**を `Placement` を持つ空行の並び（`RenderedLine::image`）へ置き換える。IR は変えない。
+
+- **文中に混ざった画像は placeholder のまま。** 折り返された行の中に複数行の矩形を置くことになり、wrap と行送りの前提が崩れる。単独段落だけなら「n 行を予約する」という単純な操作で済む。
+- 予約行は全行に `source_range` を持たせる。`--line` と `--watch` のアンカーが行に紐づいているため。
+- 画像化するかどうかは `InlineContext::images`（`highlight` と同じ扱い）で決まる。`None` のときの出力は画像機能が無かった頃と 1 バイトも変わらない。golden snapshot はこの状態を検証している。
+- container（quote / list / details）は子行の `image` をそのまま引き継ぐ。落とすと予約された空行だけが残り、何も無い隙間になる。画像の開始桁は「その行が既に持っているテキストの表示幅」なので、prefix を足すだけで自然にずれる。
+- **ファイルを読む条件は `image/mod.rs` に集約する。** base_dir 配下・スキーム無し・拡張子 allowlist・magic byte 一致・サイズ上限のいずれかを満たさなければ placeholder へ戻す。エラーにも exit code の変化にもしない。mdvu は文書中の宛先を開かないのが既定であり、画像だけが例外なので、その例外の範囲を 1 箇所で読めるようにしておく。
+- 画素寸法はヘッダから直接読む（`image/dimensions.rs`）。デコーダを持ち込まない。プロトコルは元のバイト列を base64 で渡すだけなので、必要なのはセル数の計算に使う寸法だけ。
 
 ## StyleRole
 

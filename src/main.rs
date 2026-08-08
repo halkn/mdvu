@@ -4,6 +4,7 @@ mod diagnostic;
 mod diagram;
 mod error;
 mod flavor;
+mod image;
 mod input;
 mod layout;
 mod markdown;
@@ -47,6 +48,7 @@ fn run(cli: &Cli) -> Result<()> {
         mermaid: cli.mermaid,
         base_dir: loaded.base_dir,
         highlight: cli.highlight(color),
+        images: cli.images(ctx, color).map(image::ImageSupport::detect),
     };
     match mode {
         cli::OutputMode::Pager => pager::run(pager::PagerInput {

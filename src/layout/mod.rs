@@ -10,7 +10,10 @@ pub mod wrap;
 
 pub use document::layout_document;
 
+use std::rc::Rc;
+
 use crate::diagnostic::Diagnostic;
+use crate::image::Placement;
 use crate::source::SourceRange;
 
 /// Semantic role of a run of text. Backends decide the concrete styling.
@@ -88,6 +91,10 @@ pub struct RenderedLine {
     /// Set for content that must not be re-wrapped, such as code and diagrams.
     /// The pager scrolls horizontally instead.
     pub no_wrap: bool,
+    /// An image to draw over this line and the blank lines reserved below it.
+    /// Set on the first reserved line only, and only when the terminal can draw
+    /// one; otherwise the image stays a text placeholder and this is `None`.
+    pub image: Option<Rc<Placement>>,
 }
 
 impl RenderedLine {

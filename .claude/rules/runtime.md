@@ -55,8 +55,19 @@ FSEvents は watch 開始直前の書き込みを起動後に報告すること�
 
 ハイパーリンクは stdout backend（`output/ansi.rs`）だけが出力する。`ratatui` 0.30 の `Cell` はハイパーリンク属性を持たず、symbol にエスケープ列を埋めると差分描画で閉じ側が出力されず画面全体がリンク扱いになる。pager 内では下線付きテキストに留める。
 
+## 画像プロトコル
+
+`ratatui` の `Cell` に画像は入らないので、pager では **フレーム描画後に stdout へ直接**エスケープを出す（`pager/images.rs`）。`view.rs` は buffer にしか書けないため、この処理だけ backend の外側にある。
+
+- 端末に能力を問い合わせない。判定は環境変数のみ（`TERM` / `TERM_PROGRAM` / `KITTY_WINDOW_ID` / `KONSOLE_VERSION`）。DA1 や kitty query は応答待ちが要るので使わない。`--images <protocol>` が唯一の強制手段。
+- tmux 配下では `auto` を off にする。passthrough の可否が外側の端末と tmux のバージョンで決まり、環境変数からは分からない。
+- 画像はエスケープ列なので、`--plain` / `--color never` / `NO_COLOR` では出さない。`auto` は OSC 8 と同じく TTY を要求する。
+- **配置集合が前フレームと同じなら何も送らない。** `draw` は 250ms ごとに回るため、毎回送るとちらつき、数 MB の payload を繰り返し流すことになる。比較は `Rc::ptr_eq` と画面座標で行い、バイト列は比較しない。
+- 消去は Kitty が `a=d,d=A`、iTerm2 は削除コマンドが無いので `Terminal::clear()` で全再描画に落とす。この分岐は `images::erase` の戻り値だけで表す。
+- 画面に収まらない画像は描かない。切り出しには再送が要り、status bar の上に半分描かれる方が実害が大きい。
+
 ## テスト
 
-pager の対話部分は自動テストできない。状態遷移は `state.rs` / `event.rs` の純粋な unit test で固め、描画は `ratatui` の `TestBackend` で 1 フレーム描いて検証する。ロジックを `app.rs` のイベントループへ書き足すのではなく、`state.rs` の純粋関数側へ寄せる。Windows 端末上での pager 対話は未検証（CI は build と unit test のみ）。
+pager の対話部分は自動テストできない。画像の配置計算は `app.rs` のループではなく `pager/images.rs` の純粋関数に置き、そこを unit test で固める。状態遷移は `state.rs` / `event.rs` の純粋な unit test で固め、描画は `ratatui` の `TestBackend` で 1 フレーム描いて検証する。ロジックを `app.rs` のイベントループへ書き足すのではなく、`state.rs` の純粋関数側へ寄せる。Windows 端末上での pager 対話は未検証（CI は build と unit test のみ）。
 
 `tests/cli.rs` と `tests/render.rs` のヘルパは `MDVU_CONFIG=""`、`COLORFGBG` / `NO_COLOR` 除去で開発者の環境設定を遮断している。新しいテストも同じヘルパ経由で起動する。

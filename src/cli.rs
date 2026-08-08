@@ -4,6 +4,8 @@ use std::path::PathBuf;
 use clap::builder::styling::{AnsiColor, Styles};
 use clap::{ArgMatches, CommandFactory, FromArgMatches, Parser, ValueEnum, parser::ValueSource};
 
+use crate::image::Protocol;
+
 const STYLES: Styles = Styles::styled()
     .header(AnsiColor::Green.on_default().bold())
     .usage(AnsiColor::Green.on_default().bold())
@@ -61,6 +63,10 @@ pub struct Cli {
     #[arg(long, value_enum, default_value_t = HighlightWhen::Auto, value_name = "WHEN")]
     pub highlight: HighlightWhen,
 
+    /// Draw local images with a terminal graphics protocol
+    #[arg(long, value_enum, default_value_t = ImagesWhen::Auto, value_name = "WHEN")]
+    pub images: ImagesWhen,
+
     /// Re-render the file when it changes on disk
     #[arg(long)]
     pub watch: bool,
@@ -110,6 +116,16 @@ pub enum HyperlinkWhen {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum HighlightWhen {
     Auto,
+    Never,
+}
+
+/// `auto` reads the environment; naming a protocol forces it, which is the only
+/// way to get images inside a multiplexer or an unrecognised terminal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum ImagesWhen {
+    Auto,
+    Kitty,
+    Iterm2,
     Never,
 }
 
@@ -235,6 +251,11 @@ impl Cli {
         {
             self.highlight = highlight;
         }
+        if let Some(images) = config.images
+            && defaulted("images")
+        {
+            self.images = images;
+        }
         // `--width` has no default, so an absent value means it is unset.
         if let Some(width) = config.width
             && self.width.is_none()
@@ -314,6 +335,27 @@ impl Cli {
     /// would render as the same bytes, so highlighting is skipped entirely.
     pub fn highlight(&self, color: ColorChoice) -> bool {
         self.highlight == HighlightWhen::Auto && color == ColorChoice::Ansi
+    }
+
+    /// Which graphics protocol to draw images with, if any.
+    ///
+    /// Images are escape sequences, so they follow the colour policy for the
+    /// same reason hyperlinks do: a plain document stays free of every escape
+    /// byte. `auto` also requires a terminal, since a capture such as
+    /// `fzf --preview` shows the bytes rather than the picture.
+    pub fn images(&self, ctx: TerminalContext, color: ColorChoice) -> Option<Protocol> {
+        if color == ColorChoice::Plain {
+            return None;
+        }
+        match self.images {
+            ImagesWhen::Never => None,
+            ImagesWhen::Kitty => Some(Protocol::Kitty),
+            ImagesWhen::Iterm2 => Some(Protocol::Iterm2),
+            ImagesWhen::Auto => ctx
+                .stdout_is_tty
+                .then(|| crate::image::protocol_from_env(&crate::image::Env::detect()))
+                .flatten(),
+        }
     }
 
     pub fn start_line(&self) -> Option<usize> {
@@ -437,6 +479,7 @@ mod tests {
             color: Some(ColorWhen::Never),
             hyperlinks: Some(HyperlinkWhen::Always),
             highlight: Some(HighlightWhen::Never),
+            images: Some(ImagesWhen::Never),
             width: Some(100),
             watch: None,
         };
@@ -447,6 +490,7 @@ mod tests {
         assert_eq!(cli.color, ColorWhen::Never);
         assert_eq!(cli.hyperlinks, HyperlinkWhen::Always);
         assert_eq!(cli.highlight, HighlightWhen::Never);
+        assert_eq!(cli.images, ImagesWhen::Never);
         assert_eq!(cli.width, Some(100));
     }
 
@@ -491,6 +535,33 @@ mod tests {
         assert!(cli(&["a.md"]).highlight(ColorChoice::Ansi));
         assert!(!cli(&["a.md"]).highlight(ColorChoice::Plain));
         assert!(!cli(&["--highlight", "never", "a.md"]).highlight(ColorChoice::Ansi));
+    }
+
+    #[test]
+    fn a_named_image_protocol_is_forced_and_never_escapes_a_plain_document() {
+        assert_eq!(
+            cli(&["--images", "kitty", "a.md"]).images(PIPED, ColorChoice::Ansi),
+            Some(Protocol::Kitty)
+        );
+        assert_eq!(
+            cli(&["--images", "iterm2", "a.md"]).images(TTY, ColorChoice::Ansi),
+            Some(Protocol::Iterm2)
+        );
+        assert_eq!(
+            cli(&["--images", "kitty", "a.md"]).images(TTY, ColorChoice::Plain),
+            None
+        );
+        assert_eq!(
+            cli(&["--images", "never", "a.md"]).images(TTY, ColorChoice::Ansi),
+            None
+        );
+    }
+
+    /// A capture such as `fzf --preview` would show the escape bytes instead of
+    /// a picture, so `auto` stays off without a terminal.
+    #[test]
+    fn images_auto_requires_a_terminal() {
+        assert_eq!(cli(&["a.md"]).images(PIPED, ColorChoice::Ansi), None);
     }
 
     #[test]
