@@ -1,5 +1,6 @@
 /target
 *.pending-snap
 .cargo/config.toml
-# Session scratch, not part of the repository.
+# Session scratch and per-machine settings, not part of the repository.
 .claude/plans/
+.claude/settings.local.json
