@@ -5,6 +5,7 @@ use clap::builder::styling::{AnsiColor, Styles};
 use clap::{ArgMatches, CommandFactory, FromArgMatches, Parser, ValueEnum, parser::ValueSource};
 
 use crate::image::Protocol;
+use crate::layout::icons::IconSet;
 
 const STYLES: Styles = Styles::styled()
     .header(AnsiColor::Green.on_default().bold())
@@ -67,6 +68,10 @@ pub struct Cli {
     #[arg(long, value_enum, default_value_t = ImagesWhen::Auto, value_name = "WHEN")]
     pub images: ImagesWhen,
 
+    /// Glyphs used for alerts, code fences and placeholders
+    #[arg(long, value_enum, default_value_t = IconsSet::Unicode, value_name = "SET")]
+    pub icons: IconsSet,
+
     /// Re-render the file when it changes on disk
     #[arg(long)]
     pub watch: bool,
@@ -127,6 +132,15 @@ pub enum ImagesWhen {
     Kitty,
     Iterm2,
     Never,
+}
+
+/// `nerd` is opt-in and never detected: whether a Nerd Font is installed is a
+/// property of the terminal's font, and asking the terminal would mean writing
+/// to the tty and waiting for an answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum IconsSet {
+    Unicode,
+    Nerd,
 }
 
 /// Where the Markdown source comes from.
@@ -256,6 +270,11 @@ impl Cli {
         {
             self.images = images;
         }
+        if let Some(icons) = config.icons
+            && defaulted("icons")
+        {
+            self.icons = icons;
+        }
         // `--width` has no default, so an absent value means it is unset.
         if let Some(width) = config.width
             && self.width.is_none()
@@ -355,6 +374,18 @@ impl Cli {
                 .stdout_is_tty
                 .then(|| crate::image::protocol_from_env(&crate::image::Env::detect()))
                 .flatten(),
+        }
+    }
+
+    /// Which glyph set the chrome is drawn with.
+    ///
+    /// Glyphs are ordinary characters rather than escape sequences, so unlike
+    /// images and hyperlinks they are not tied to the colour policy: `--plain`
+    /// still shows them.
+    pub fn icons(&self) -> IconSet {
+        match self.icons {
+            IconsSet::Unicode => IconSet::Unicode,
+            IconsSet::Nerd => IconSet::Nerd,
         }
     }
 
@@ -480,6 +511,7 @@ mod tests {
             hyperlinks: Some(HyperlinkWhen::Always),
             highlight: Some(HighlightWhen::Never),
             images: Some(ImagesWhen::Never),
+            icons: Some(IconsSet::Nerd),
             width: Some(100),
             watch: None,
         };
@@ -491,7 +523,34 @@ mod tests {
         assert_eq!(cli.hyperlinks, HyperlinkWhen::Always);
         assert_eq!(cli.highlight, HighlightWhen::Never);
         assert_eq!(cli.images, ImagesWhen::Never);
+        assert_eq!(cli.icons, IconsSet::Nerd);
         assert_eq!(cli.width, Some(100));
+    }
+
+    /// Glyphs are opt-in, and a reader who turned them on in the configuration
+    /// can still ask for the plain set on a machine without the font.
+    #[test]
+    fn icons_default_to_unicode_and_are_chosen_explicitly() {
+        assert_eq!(cli(&["a.md"]).icons(), IconSet::Unicode);
+        assert_eq!(cli(&["--icons", "nerd", "a.md"]).icons(), IconSet::Nerd);
+        let config = Config {
+            icons: Some(IconsSet::Nerd),
+            ..Config::default()
+        };
+        assert_eq!(
+            configured(&["--icons", "unicode", "a.md"], &config).icons(),
+            IconSet::Unicode
+        );
+    }
+
+    /// Glyphs are characters, not escape sequences, so the colour policy has no
+    /// say over them.
+    #[test]
+    fn icons_are_independent_of_the_colour_policy() {
+        assert_eq!(
+            cli(&["--plain", "--icons", "nerd", "a.md"]).icons(),
+            IconSet::Nerd
+        );
     }
 
     #[test]

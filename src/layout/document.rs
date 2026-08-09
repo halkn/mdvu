@@ -482,7 +482,10 @@ fn quote(
     };
     if let Some(kind) = q.kind {
         out.push(RenderedLine {
-            spans: vec![RenderedSpan::new(format!("╭─ {}", kind.label()), role)],
+            spans: vec![RenderedSpan::new(
+                format!("╭─ {}{}", ctx.icons.alert(kind), kind.label()),
+                role,
+            )],
             source_range: Some(q.range),
             no_wrap: true,
             image: None,
@@ -521,7 +524,7 @@ fn quote(
 
 fn code(c: &CodeBlock, ctx: &InlineContext, out: &mut Vec<RenderedLine>) {
     let header = match &c.language {
-        Some(language) => format!("╭─ {language}"),
+        Some(language) => format!("╭─ {}{language}", ctx.icons.language(language)),
         None => "╭─".to_string(),
     };
     out.push(RenderedLine {
@@ -642,6 +645,7 @@ mod tests {
     use super::*;
     use crate::cli::Flavor;
     use crate::image::{CellSize, ImageSupport, Protocol};
+    use crate::layout::icons::IconSet;
     use crate::markdown::model::AlertKind;
     use crate::source::SourceText;
     use std::io::Write;
@@ -743,6 +747,43 @@ mod tests {
         let rendered = render("> [!NOTE]\n", &InlineContext::default());
         let text: Vec<String> = rendered.lines.iter().map(RenderedLine::text).collect();
         assert_eq!(text, vec!["╭─ Note", "╰─"]);
+    }
+
+    /// The glyph sits inside the existing box, so an alert keeps one role and
+    /// one shape whichever set is in use.
+    #[test]
+    fn the_nerd_set_puts_a_glyph_before_the_alert_label() {
+        let ctx = InlineContext {
+            icons: IconSet::Nerd,
+            ..InlineContext::default()
+        };
+        let rendered = render("> [!WARNING]\n> Careful.\n", &ctx);
+        let text: Vec<String> = rendered.lines.iter().map(RenderedLine::text).collect();
+        assert_eq!(
+            text[0],
+            format!("╭─ {}Warning", IconSet::Nerd.alert(AlertKind::Warning))
+        );
+        assert_eq!(
+            rendered.lines[0].spans[0].role,
+            StyleRole::Alert(AlertKind::Warning)
+        );
+    }
+
+    #[test]
+    fn the_nerd_set_puts_a_glyph_before_the_fence_language() {
+        let ctx = InlineContext {
+            icons: IconSet::Nerd,
+            ..InlineContext::default()
+        };
+        let rendered = render("```rust\nfn main() {}\n```\n", &ctx);
+        let text: Vec<String> = rendered.lines.iter().map(RenderedLine::text).collect();
+        assert_eq!(
+            text[0],
+            format!("╭─ {}rust", IconSet::Nerd.language("rust"))
+        );
+        // A fence without a language has nothing to name, so it gains no glyph.
+        let bare = render("```\nplain\n```\n", &ctx);
+        assert_eq!(bare.lines[0].text(), "╭─");
     }
 
     /// A quote without a kind renders exactly as it did before alerts existed,

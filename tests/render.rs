@@ -208,6 +208,28 @@ golden_with!(
     ["--mermaid", "off"]
 );
 
+// Glyphs are characters rather than escapes, so `--plain` still shows them and
+// the golden files record them. Every other snapshot stays on the default set,
+// which is what proves the default output is unchanged.
+golden_with!(
+    gfm_alerts_nerd_80,
+    "tests/fixtures/gfm/alerts.md",
+    "80",
+    ["--icons", "nerd"]
+);
+golden_with!(
+    gfm_showcase_nerd_80,
+    "tests/fixtures/gfm/showcase.md",
+    "80",
+    ["--icons", "nerd"]
+);
+golden_with!(
+    azure_attachments_nerd_80,
+    "tests/fixtures/azure-devops/attachments.md",
+    "80",
+    ["--flavor", "azure-devops", "--icons", "nerd"]
+);
+
 #[test]
 fn ascii_mode_emits_no_wide_drawing_characters() {
     let out = plain_with(

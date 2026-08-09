@@ -5,6 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::layout::icons::IconSet;
 use crate::layout::{RenderedSpan, StyleRole};
 use crate::markdown::model::{Inline, plain_text};
 
@@ -23,6 +24,9 @@ pub struct InlineContext {
     /// What the terminal can draw images with, when it can. `None` keeps every
     /// image a text placeholder.
     pub images: Option<crate::image::ImageSupport>,
+    /// Which glyphs the chrome is drawn with. The default set adds nothing, so
+    /// a reader without a Nerd Font sees exactly what they saw before.
+    pub icons: IconSet,
 }
 
 /// Extensions rendered as an image placeholder rather than a generic attachment.
@@ -92,13 +96,14 @@ fn push_inline(
             }
         }
         Inline::Image(image) => {
-            let label = if is_image_path(&image.dest) {
-                format!("[image: {}]", placeholder_label(&image.alt, &image.dest))
-            } else {
-                format!(
-                    "[attachment: {}]",
-                    placeholder_label(&image.alt, &image.dest)
-                )
+            let name = placeholder_label(&image.alt, &image.dest);
+            // With a glyph the kind is legible without the word, so the bracket
+            // form gives way to it; without one the word is all there is.
+            let label = match (is_image_path(&image.dest), ctx.icons) {
+                (true, IconSet::Unicode) => format!("[image: {name}]"),
+                (false, IconSet::Unicode) => format!("[attachment: {name}]"),
+                (true, icons) => format!("{}{name}", icons.image()),
+                (false, icons) => format!("{}{name}", icons.attachment(&image.dest)),
             };
             push(out, &label, StyleRole::Muted);
             push(out, " (", StyleRole::LinkTarget);
@@ -502,6 +507,38 @@ mod tests {
         assert_eq!(
             text_of(&spans(&inlines, &ctx())),
             "[attachment: design.xlsx] (.attachments/design.xlsx)"
+        );
+    }
+
+    /// With a glyph the word would be saying what the picture already says, so
+    /// the bracket form gives way to it. The destination still follows.
+    #[test]
+    fn the_nerd_set_names_the_kind_with_a_glyph_instead_of_a_word() {
+        let nerd = InlineContext {
+            icons: IconSet::Nerd,
+            ..InlineContext::default()
+        };
+        let image = vec![Inline::Image(ImageInline {
+            dest: ".attachments/architecture.png".into(),
+            alt: "architecture diagram".into(),
+        })];
+        assert_eq!(
+            text_of(&spans(&image, &nerd)),
+            format!(
+                "{}architecture diagram (.attachments/architecture.png)",
+                IconSet::Nerd.image()
+            )
+        );
+        let attachment = vec![Inline::Image(ImageInline {
+            dest: ".attachments/design.xlsx".into(),
+            alt: String::new(),
+        })];
+        assert_eq!(
+            text_of(&spans(&attachment, &nerd)),
+            format!(
+                "{}design.xlsx (.attachments/design.xlsx)",
+                IconSet::Nerd.attachment("design.xlsx")
+            )
         );
     }
 
