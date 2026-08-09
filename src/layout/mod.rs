@@ -3,6 +3,7 @@
 
 pub mod document;
 pub mod highlight;
+pub mod icons;
 pub mod inline;
 pub mod table;
 pub mod theme;

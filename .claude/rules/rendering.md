@@ -45,7 +45,18 @@ diagram は **parse 直後・layout 前に一度だけ** render し、結果を 
 
 span は色ではなく意味的な `StyleRole` を持ち、色は `layout/theme.rs` と backend が決める。新しい表示要素を足すときは色を直書きせず、`StyleRole` を増やして theme と両 backend（`output/ansi.rs`・`pager/view.rs`）に写像を追加する。両 backend は `theme.style(role)` が返す `Style` だけを写像しているので、既存の属性で表せる role なら theme の 1 箇所で足りる。
 
-見出しは 6 段すべてを 16 色で塗り分けない。H1 / H2 / H3 / H4 以降の 4 段の強弱に留め、正確なレベルは行頭に必ず出る `#` の数が担う。Nerd Font のアイコンで段階を表す方式（md-render.nvim）は、素の端末で tofu になると桁がずれるため採らない。
+見出しは 6 段すべてを 16 色で塗り分けない。H1 / H2 / H3 / H4 以降の 4 段の強弱に留め、正確なレベルは行頭に必ず出る `#` の数が担う。見出しレベルをアイコンだけで表す方式（md-render.nvim）は、フォントが無い端末でレベルが読めなくなるため採らない。
+
+## アイコン
+
+Nerd Font のグリフは **`layout/icons.rs` だけに書く**。`merman` が `diagram/mermaid.rs` に閉じているのと同じ扱いで、他のモジュールは `IconSet` にプレフィックスを問い合わせて連結するだけにする。
+
+- 既定は `IconSet::Unicode` で、プレフィックスは全て空文字列。**既定の出力は 1 バイトも変わらない**ことを golden snapshot が保証する（nerd 用の snapshot は `--icons nerd` を付けた別ファイルに分ける）。
+- 自動検出はしない。フォントの有無は端末のプロファイルの問題で、環境変数からは分からず、端末へ問い合わせるのは禁じている。`--icons nerd` / `icons = "nerd"` の明示だけが有効化手段。
+- グリフの後ろに必ず半角空白を置き、2 桁の枠として出す。PUA は East Asian Width Ambiguous で `display_width` は 1 を返すが、2 桁で描く端末もあるため、空白でラベルとの間隔を確保しつつずれを 1 桁に抑える。この前提は `icons.rs` の unit test（全グリフが 1 桁）が守る。
+- **アイコンは色ポリシーに従わせない。** 画像や OSC 8 と違いエスケープ列ではなく普通の文字なので、`--plain` / `NO_COLOR` でも出す。
+- 対象は alert ラベル・code fence の言語・画像 / 添付 placeholder に限る。見出しの `#` と箇条書きの `• ◦ ▪` はレベルと深さそのものを表しているので置き換えない。
+- `StyleRole` は増やさない。アイコンは、それが付く既存 span と同じ role に載せる。
 
 ## 折り返しと禁則
 

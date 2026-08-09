@@ -49,6 +49,7 @@ fn run(cli: &Cli) -> Result<()> {
         base_dir: loaded.base_dir,
         highlight: cli.highlight(color),
         images: cli.images(ctx, color).map(image::ImageSupport::detect),
+        icons: cli.icons(),
     };
     match mode {
         cli::OutputMode::Pager => pager::run(pager::PagerInput {

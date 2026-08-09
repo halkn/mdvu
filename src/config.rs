@@ -12,7 +12,9 @@ use std::path::PathBuf;
 use clap::ValueEnum;
 use serde::Deserialize;
 
-use crate::cli::{ColorWhen, Flavor, HighlightWhen, HyperlinkWhen, ImagesWhen, MermaidMode, Theme};
+use crate::cli::{
+    ColorWhen, Flavor, HighlightWhen, HyperlinkWhen, IconsSet, ImagesWhen, MermaidMode, Theme,
+};
 
 /// Overrides an absent flag would otherwise take from its built-in default.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -24,6 +26,7 @@ pub struct Config {
     pub hyperlinks: Option<HyperlinkWhen>,
     pub highlight: Option<HighlightWhen>,
     pub images: Option<ImagesWhen>,
+    pub icons: Option<IconsSet>,
     pub width: Option<u16>,
     pub watch: Option<bool>,
 }
@@ -40,6 +43,7 @@ struct Raw {
     hyperlinks: Option<String>,
     highlight: Option<String>,
     images: Option<String>,
+    icons: Option<String>,
     width: Option<i64>,
     watch: Option<bool>,
 }
@@ -93,6 +97,7 @@ pub fn parse(text: &str) -> Result<Config, String> {
         hyperlinks: value(raw.hyperlinks.as_deref(), "hyperlinks")?,
         highlight: value(raw.highlight.as_deref(), "highlight")?,
         images: value(raw.images.as_deref(), "images")?,
+        icons: value(raw.icons.as_deref(), "icons")?,
         width: width(raw.width)?,
         watch: raw.watch,
     })
@@ -171,6 +176,7 @@ mod tests {
             hyperlinks = "never"
             highlight = "never"
             images = "kitty"
+            icons = "nerd"
             width = 100
             "#,
         )
@@ -185,6 +191,7 @@ mod tests {
                 hyperlinks: Some(HyperlinkWhen::Never),
                 highlight: Some(HighlightWhen::Never),
                 images: Some(ImagesWhen::Kitty),
+                icons: Some(IconsSet::Nerd),
                 width: Some(100),
                 watch: None,
             }
@@ -211,6 +218,13 @@ mod tests {
         let err = parse("mermaid = \"svg\"").expect_err("invalid value");
         assert!(err.contains("svg"), "{err}");
         assert!(err.contains("unicode"), "{err}");
+    }
+
+    #[test]
+    fn an_unknown_glyph_set_is_rejected() {
+        let err = parse("icons = \"emoji\"").expect_err("invalid value");
+        assert!(err.contains("emoji"), "{err}");
+        assert!(err.contains("nerd"), "{err}");
     }
 
     #[test]

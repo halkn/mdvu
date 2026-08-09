@@ -88,6 +88,7 @@ mdvu --no-pager --plain doc.md       # unstyled text to stdout
 | `--hyperlinks <WHEN>` | OSC 8 links in stdout output: `auto`, `always`, `never` (default: `auto`) |
 | `--highlight <WHEN>` | Syntax highlighting for code blocks: `auto`, `never` (default: `auto`) |
 | `--images <WHEN>` | Inline images: `auto`, `kitty`, `iterm2`, `never` (default: `auto`) |
+| `--icons <SET>` | Glyphs for alerts, code fences and placeholders: `unicode`, `nerd` (default: `unicode`) |
 | `--watch` | Re-render when the file changes on disk (pager only) |
 | `--plain` | Alias for `--color never` |
 
@@ -111,7 +112,8 @@ in the pager and on stdout; where hyperlinks are emitted, an underlined label is
 also the one the terminal can open.
 
 `--images` draws local images with a terminal graphics protocol; see
-[Images](#images) below.
+[Images](#images) below. `--icons nerd` swaps parts of the chrome for Nerd Font
+glyphs; see [Icons](#icons).
 
 `--watch` follows the file while something else edits it — a coding agent, or
 your editor in another window — and re-renders on every save. The reading
@@ -137,6 +139,7 @@ color = "auto"
 hyperlinks = "always"
 highlight = "auto"
 images = "auto"
+icons = "unicode"
 width = 100
 watch = true
 ```
@@ -205,10 +208,11 @@ placeholder everywhere else; see [Images](#images).
 
 A quote that opens with `[!NOTE]`, `[!TIP]`, `[!IMPORTANT]`, `[!WARNING]` or
 `[!CAUTION]` is drawn as a labelled box in a colour matching its kind. The label
-is text rather than an icon, so no font beyond the box drawing characters is
-assumed, and the kind is still readable under `--plain`. Alerts work in both
-flavors — Azure DevOps Wiki uses the same syntax — and an unrecognised kind such
-as `[!FOO]` stays an ordinary quote with its marker intact.
+is a word, so no font beyond the box drawing characters is assumed and the kind
+is still readable under `--plain`; `--icons nerd` puts a glyph in front of it.
+Alerts work in both flavors — Azure DevOps Wiki uses the same syntax — and an
+unrecognised kind such as `[!FOO]` stays an ordinary quote with its marker
+intact.
 
 Bullets change with nesting depth, cycling `•`, `◦` and `▪`.
 
@@ -315,6 +319,26 @@ aspect ratio. In the pager it is drawn only while it fits on screen whole: half
 a picture over the status bar is worse than none, and neither protocol can crop
 a placement without sending it again.
 
+## Icons
+
+`--icons nerd` draws part of the chrome with [Nerd Font](https://www.nerdfonts.com/)
+glyphs: a glyph before an alert label, before a code fence's language, and in
+place of the `[image: ...]` and `[attachment: ...]` words. Headings keep their
+`#` markers and lists keep `•`, `◦` and `▪`; the level and the depth are the
+information there, and a missing glyph would take it away.
+
+The default is `unicode`, which renders exactly what `mdvu` rendered before this
+option existed. Nothing is auto-detected: whether the terminal's font carries
+these glyphs cannot be read from the environment, and asking the terminal would
+mean writing to the tty and waiting for an answer, which `mdvu` never does. Turn
+it on per run with `--icons nerd`, or once with `icons = "nerd"` in the
+configuration file.
+
+Glyphs are ordinary characters rather than escape sequences, so unlike images
+and hyperlinks they are unaffected by `--plain`, `--color never` and `NO_COLOR`.
+A terminal without a Nerd Font shows tofu in their place; the columns still line
+up, because each glyph is measured as one display column.
+
 ## Comparison
 
 | Tool | Focus | How `mdvu` differs |
@@ -338,6 +362,9 @@ a placement without sending it again.
   protocol.
 - An image is drawn only when its paragraph holds nothing else, and only from
   the document's own directory. SVG is never drawn.
+- `--icons nerd` assumes each glyph occupies one column, which is what
+  `mdvu` measures and what a Nerd Font Mono variant draws. A terminal that draws
+  them two columns wide shifts the rest of that line by one.
 - Kinsoku covers the JIS X 4051 CJK and halfwidth katakana classes. ASCII
   punctuation is excluded, and there is no phrase-level segmentation, so a line
   can still break in the middle of a Japanese word.
