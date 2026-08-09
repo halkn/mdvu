@@ -16,6 +16,8 @@ paths:
 `markdown/model.rs` は renderer-neutral に保つ。`ratatui` や端末型への依存をここへ持ち込まない。フレーバー差は `flavor/` の内側に閉じ、`layout/` 以降へ持ち込まない。`azure_devops.rs` は Azure 固有の記法を汎用の block / inline へ変換する役目であって、描画の分岐を作る役目ではない。
 
 - **`Block::Image` は作らない。** CommonMark では画像は inline 要素であり、段落と独立した block にすると source range と wrap 処理が二重化する。`Inline::Image` として保持し、layout 側で `[image: ...]` / `[attachment: ...]` の placeholder か、描画領域へ変換する。
+- **`Block::Alert` も作らない。** GFM alert は「ラベルを持つ引用」であり、構造は `Block::Quote` と同一。`QuoteBlock.kind: Option<AlertKind>` として持てば、`Block::range()`・`collect_headings`・`gfm::promote_diagrams`・`azure_devops.rs` の再帰といった既存の走査がそのまま動く。variant を足すとその全部に分岐が増え、得られるのは layout の 1 箇所の分岐だけになる。
+- alert の判定は `Options::ENABLE_GFM` に任せ、フレーバーで分けない。Azure DevOps Wiki も同じ `> [!NOTE]` 記法を持つため、`markdown/parser.rs` の共通経路に置くのが両フレーバーで正しい。未知の種別（`[!FOO]`）は `kind: None` の普通の引用になり、マーカーは本文に残る。
 - すべての user-authored block は `SourceRange`（byte 範囲 + 1-based 行）を持つ。`--line` と `--watch` の読み位置保持がこれに依存するので、新しい block を足すときも必ず持たせる。
 - 未終端 `:::` container の body は **最初の空行で打ち切り**、diagnostic として報告する。markdown-it 系のように文書末尾まで伸ばすと、`::: mermaid` の閉じ忘れ 1 個で以降の本文全体が diagram body に吸収され、viewer として最も見たいものが読めなくなる。
 - 閉じマーカー探索は code fence を認識する。fence 内の `:::` はリテラルであり closer ではない。fence 内の Azure 記法も同様にリテラルのまま残す。
@@ -41,7 +43,9 @@ diagram は **parse 直後・layout 前に一度だけ** render し、結果を 
 
 ## StyleRole
 
-span は色ではなく意味的な `StyleRole` を持ち、色は `layout/theme.rs` と backend が決める。新しい表示要素を足すときは色を直書きせず、`StyleRole` を増やして theme と両 backend（`output/ansi.rs`・`pager/view.rs`）に写像を追加する。
+span は色ではなく意味的な `StyleRole` を持ち、色は `layout/theme.rs` と backend が決める。新しい表示要素を足すときは色を直書きせず、`StyleRole` を増やして theme と両 backend（`output/ansi.rs`・`pager/view.rs`）に写像を追加する。両 backend は `theme.style(role)` が返す `Style` だけを写像しているので、既存の属性で表せる role なら theme の 1 箇所で足りる。
+
+見出しは 6 段すべてを 16 色で塗り分けない。H1 / H2 / H3 / H4 以降の 4 段の強弱に留め、正確なレベルは行頭に必ず出る `#` の数が担う。Nerd Font のアイコンで段階を表す方式（md-render.nvim）は、素の端末で tofu になると桁がずれるため採らない。
 
 ## 折り返しと禁則
 

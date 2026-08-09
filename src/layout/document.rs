@@ -26,19 +26,27 @@ pub fn layout_document(
     ctx: &InlineContext,
 ) -> RenderedDocument {
     let mut lines = Vec::new();
-    layout_blocks(&document.blocks, options.width, ctx, &mut lines);
+    layout_blocks(&document.blocks, options.width, 0, ctx, &mut lines);
     RenderedDocument {
         lines,
         diagnostics: document.diagnostics.clone(),
     }
 }
 
-fn layout_blocks(blocks: &[Block], width: usize, ctx: &InlineContext, out: &mut Vec<RenderedLine>) {
+/// `depth` is how many bullet lists enclose these blocks. Only `list` raises it,
+/// so a list inside a quote or a `<details>` keeps counting from where it was.
+fn layout_blocks(
+    blocks: &[Block],
+    width: usize,
+    depth: usize,
+    ctx: &InlineContext,
+    out: &mut Vec<RenderedLine>,
+) {
     for (index, block) in blocks.iter().enumerate() {
         if index > 0 && needs_separator(&blocks[index - 1], block) {
             out.push(RenderedLine::blank());
         }
-        layout_block(block, width, ctx, out);
+        layout_block(block, width, depth, ctx, out);
     }
 }
 
@@ -48,22 +56,28 @@ fn needs_separator(previous: &Block, current: &Block) -> bool {
     !matches!((previous, current), (Block::Paragraph(_), Block::List(_)))
 }
 
-fn layout_block(block: &Block, width: usize, ctx: &InlineContext, out: &mut Vec<RenderedLine>) {
+fn layout_block(
+    block: &Block,
+    width: usize,
+    depth: usize,
+    ctx: &InlineContext,
+    out: &mut Vec<RenderedLine>,
+) {
     match block {
         Block::Heading(h) => heading(h, width, ctx, out),
         Block::Paragraph(p) => paragraph(p, width, ctx, out),
-        Block::List(l) => list(l, width, ctx, out),
-        Block::Quote(q) => quote(q, width, ctx, out),
+        Block::List(l) => list(l, width, depth, ctx, out),
+        Block::Quote(q) => quote(q, width, depth, ctx, out),
         Block::Code(c) => code(c, ctx, out),
         Block::Table(t) => out.extend(layout_table(t, width, ctx)),
         Block::HorizontalRule(range) => out.push(line(
             vec![RenderedSpan::new("─".repeat(width), StyleRole::Muted)],
             *range,
         )),
-        Block::Footnote(f) => footnote(f, width, ctx, out),
+        Block::Footnote(f) => footnote(f, width, depth, ctx, out),
         Block::RawHtml(h) => raw_html(h, out),
         Block::Toc(t) => toc(t, width, out),
-        Block::Details(d) => details(d, width, ctx, out),
+        Block::Details(d) => details(d, width, depth, ctx, out),
         Block::Placeholder(p) => placeholder(p, width, out),
         Block::Diagram(d) => diagram(d, width, ctx, out),
     }
@@ -104,7 +118,13 @@ fn toc(t: &TocBlock, width: usize, out: &mut Vec<RenderedLine>) {
     }
 }
 
-fn details(d: &DetailsBlock, width: usize, ctx: &InlineContext, out: &mut Vec<RenderedLine>) {
+fn details(
+    d: &DetailsBlock,
+    width: usize,
+    depth: usize,
+    ctx: &InlineContext,
+    out: &mut Vec<RenderedLine>,
+) {
     const BORDER: &str = "│ ";
     let marker = "▾ ";
     let marker_width = display_width(marker);
@@ -133,6 +153,7 @@ fn details(d: &DetailsBlock, width: usize, ctx: &InlineContext, out: &mut Vec<Re
     layout_blocks(
         &d.blocks,
         width.saturating_sub(border_width).max(1),
+        depth,
         ctx,
         &mut child,
     );
@@ -374,7 +395,18 @@ fn drawable_image(
     crate::image::resolve(&image.dest, ctx.base_dir.as_deref(), support, width)
 }
 
-fn list(l: &ListBlock, width: usize, ctx: &InlineContext, out: &mut Vec<RenderedLine>) {
+/// Bullets by nesting depth. All three are East Asian Width Ambiguous, the same
+/// class as the `•` used at every depth before, so the measured width is
+/// unchanged.
+const BULLETS: [&str; 3] = ["•", "◦", "▪"];
+
+fn list(
+    l: &ListBlock,
+    width: usize,
+    depth: usize,
+    ctx: &InlineContext,
+    out: &mut Vec<RenderedLine>,
+) {
     // A list is loose when some item carries more than one block of its own,
     // ignoring nested lists, which attach to the item's text.
     let loose = l.items.iter().any(|item| {
@@ -395,7 +427,10 @@ fn list(l: &ListBlock, width: usize, ctx: &InlineContext, out: &mut Vec<Rendered
                 format!("{}. ", start.saturating_add(index as u64)),
                 StyleRole::ListMarker,
             ),
-            (None, None) => ("• ".to_string(), StyleRole::ListMarker),
+            (None, None) => (
+                format!("{} ", BULLETS[depth % BULLETS.len()]),
+                StyleRole::ListMarker,
+            ),
         };
         let marker_width = display_width(&marker);
 
@@ -403,6 +438,7 @@ fn list(l: &ListBlock, width: usize, ctx: &InlineContext, out: &mut Vec<Rendered
         layout_blocks(
             &item.blocks,
             width.saturating_sub(marker_width).max(1),
+            depth + 1,
             ctx,
             &mut child,
         );
@@ -428,24 +464,57 @@ fn list(l: &ListBlock, width: usize, ctx: &InlineContext, out: &mut Vec<Rendered
     }
 }
 
-fn quote(q: &QuoteBlock, width: usize, ctx: &InlineContext, out: &mut Vec<RenderedLine>) {
+/// A quote, or a GFM alert when the quote carries a kind.
+///
+/// An alert reuses the chrome code blocks and diagrams already draw, so the
+/// label survives `--plain`, where colour cannot tell an alert from a quote.
+fn quote(
+    q: &QuoteBlock,
+    width: usize,
+    depth: usize,
+    ctx: &InlineContext,
+    out: &mut Vec<RenderedLine>,
+) {
     const BORDER: &str = "│ ";
+    let role = match q.kind {
+        Some(kind) => StyleRole::Alert(kind),
+        None => StyleRole::Quote,
+    };
+    if let Some(kind) = q.kind {
+        out.push(RenderedLine {
+            spans: vec![RenderedSpan::new(format!("╭─ {}", kind.label()), role)],
+            source_range: Some(q.range),
+            no_wrap: true,
+            image: None,
+        });
+    }
+
     let border_width = display_width(BORDER);
     let mut child = Vec::new();
     layout_blocks(
         &q.blocks,
         width.saturating_sub(border_width).max(1),
+        depth,
         ctx,
         &mut child,
     );
     for mut rendered in child {
-        let mut all = vec![RenderedSpan::new(BORDER, StyleRole::Quote)];
+        let mut all = vec![RenderedSpan::new(BORDER, role)];
         all.append(&mut rendered.spans);
         out.push(RenderedLine {
             spans: all,
             source_range: rendered.source_range.or(Some(q.range)),
             no_wrap: rendered.no_wrap,
             image: rendered.image,
+        });
+    }
+
+    if q.kind.is_some() {
+        out.push(RenderedLine {
+            spans: vec![RenderedSpan::new("╰─", role)],
+            source_range: Some(q.range),
+            no_wrap: true,
+            image: None,
         });
     }
 }
@@ -496,13 +565,20 @@ fn code(c: &CodeBlock, ctx: &InlineContext, out: &mut Vec<RenderedLine>) {
     });
 }
 
-fn footnote(f: &FootnoteBlock, width: usize, ctx: &InlineContext, out: &mut Vec<RenderedLine>) {
+fn footnote(
+    f: &FootnoteBlock,
+    width: usize,
+    depth: usize,
+    ctx: &InlineContext,
+    out: &mut Vec<RenderedLine>,
+) {
     let marker = format!("[^{}] ", f.label);
     let marker_width = display_width(&marker);
     let mut child = Vec::new();
     layout_blocks(
         &f.blocks,
         width.saturating_sub(marker_width).max(1),
+        depth,
         ctx,
         &mut child,
     );
@@ -566,6 +642,7 @@ mod tests {
     use super::*;
     use crate::cli::Flavor;
     use crate::image::{CellSize, ImageSupport, Protocol};
+    use crate::markdown::model::AlertKind;
     use crate::source::SourceText;
     use std::io::Write;
     use std::path::Path;
@@ -642,6 +719,63 @@ mod tests {
         assert_eq!(rendered.lines.len(), 1);
         assert!(rendered.lines[0].image.is_none());
         assert!(rendered.lines[0].text().starts_with("[image: alt]"));
+    }
+
+    #[test]
+    fn an_alert_is_a_labelled_box() {
+        let rendered = render("> [!WARNING]\n> Careful.\n", &InlineContext::default());
+        let text: Vec<String> = rendered.lines.iter().map(RenderedLine::text).collect();
+        assert_eq!(text, vec!["╭─ Warning", "│ Careful.", "╰─"]);
+        // Chrome and label share one role, so a backend colours the whole box
+        // from the kind alone.
+        assert!(
+            rendered
+                .lines
+                .iter()
+                .all(|l| l.spans[0].role == StyleRole::Alert(AlertKind::Warning))
+        );
+    }
+
+    /// The header and footer exist to name the kind, so they are drawn even
+    /// when the author wrote no body.
+    #[test]
+    fn an_empty_alert_still_shows_its_label() {
+        let rendered = render("> [!NOTE]\n", &InlineContext::default());
+        let text: Vec<String> = rendered.lines.iter().map(RenderedLine::text).collect();
+        assert_eq!(text, vec!["╭─ Note", "╰─"]);
+    }
+
+    /// A quote without a kind renders exactly as it did before alerts existed,
+    /// which is what the golden snapshots assert.
+    #[test]
+    fn a_plain_quote_keeps_its_bar() {
+        let rendered = render("> Quoted.\n", &InlineContext::default());
+        let text: Vec<String> = rendered.lines.iter().map(RenderedLine::text).collect();
+        assert_eq!(text, vec!["│ Quoted."]);
+        assert_eq!(rendered.lines[0].spans[0].role, StyleRole::Quote);
+    }
+
+    #[test]
+    fn bullets_change_with_nesting_depth() {
+        let rendered = render("- one\n  - two\n    - three\n", &InlineContext::default());
+        let text: Vec<String> = rendered.lines.iter().map(RenderedLine::text).collect();
+        assert_eq!(text, vec!["• one", "  ◦ two", "    ▪ three"]);
+    }
+
+    /// Depth counts enclosing lists of either kind, so a bullet under a number
+    /// is still one level in.
+    #[test]
+    fn an_ordered_list_raises_the_depth_of_the_bullets_inside_it() {
+        let rendered = render("1. one\n   - two\n", &InlineContext::default());
+        let text: Vec<String> = rendered.lines.iter().map(RenderedLine::text).collect();
+        assert_eq!(text, vec!["1. one", "   ◦ two"]);
+    }
+
+    /// A quote is not a list, so it must not shift the bullet under it.
+    #[test]
+    fn a_quote_does_not_raise_the_bullet_depth() {
+        let rendered = render("> - one\n", &InlineContext::default());
+        assert_eq!(rendered.lines[0].text(), "│ • one");
     }
 
     #[test]

@@ -14,6 +14,7 @@ use std::rc::Rc;
 
 use crate::diagnostic::Diagnostic;
 use crate::image::Placement;
+use crate::markdown::model::AlertKind;
 use crate::source::SourceRange;
 
 /// Semantic role of a run of text. Backends decide the concrete styling.
@@ -31,6 +32,8 @@ pub enum StyleRole {
     Link,
     LinkTarget,
     Quote,
+    /// Chrome and label of a GFM alert. The kind chooses the colour.
+    Alert(AlertKind),
     ListMarker,
     TaskChecked,
     TaskUnchecked,

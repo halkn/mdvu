@@ -5,7 +5,8 @@
 //! it again when it closes.
 
 use pulldown_cmark::{
-    Alignment as CmarkAlignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd,
+    Alignment as CmarkAlignment, BlockQuoteKind, CodeBlockKind, Event, HeadingLevel, Options,
+    Parser, Tag, TagEnd,
 };
 
 use crate::diagnostic::Diagnostic;
@@ -17,6 +18,9 @@ pub fn options() -> Options {
         | Options::ENABLE_FOOTNOTES
         | Options::ENABLE_STRIKETHROUGH
         | Options::ENABLE_TASKLISTS
+        // The only thing this flag adds in 0.13 is the alert kind on a block
+        // quote. An unrecognised `[!FOO]` stays literal text in a plain quote.
+        | Options::ENABLE_GFM
 }
 
 pub fn parse(source: SourceText) -> Document {
@@ -64,6 +68,7 @@ enum Frame {
     Quote {
         start: usize,
         end: usize,
+        kind: Option<AlertKind>,
         blocks: Vec<Block>,
     },
     List {
@@ -204,9 +209,10 @@ impl<'a> Builder<'a> {
                 level: heading_level(level),
                 content: Vec::new(),
             },
-            Tag::BlockQuote(_) => Frame::Quote {
+            Tag::BlockQuote(kind) => Frame::Quote {
                 start,
                 end,
+                kind: kind.map(alert_kind),
                 blocks: Vec::new(),
             },
             Tag::CodeBlock(kind) => Frame::Code {
@@ -325,9 +331,18 @@ impl<'a> Builder<'a> {
                     range,
                 }));
             }
-            Frame::Quote { start, end, blocks } => {
+            Frame::Quote {
+                start,
+                end,
+                kind,
+                blocks,
+            } => {
                 let range = self.source.range(start, end);
-                self.push_block(Block::Quote(QuoteBlock { blocks, range }));
+                self.push_block(Block::Quote(QuoteBlock {
+                    kind,
+                    blocks,
+                    range,
+                }));
             }
             Frame::List {
                 start,
@@ -549,6 +564,16 @@ fn closes_container(tag: &TagEnd) -> bool {
         tag,
         TagEnd::Item | TagEnd::BlockQuote(_) | TagEnd::FootnoteDefinition | TagEnd::List(_)
     )
+}
+
+fn alert_kind(kind: BlockQuoteKind) -> AlertKind {
+    match kind {
+        BlockQuoteKind::Note => AlertKind::Note,
+        BlockQuoteKind::Tip => AlertKind::Tip,
+        BlockQuoteKind::Important => AlertKind::Important,
+        BlockQuoteKind::Warning => AlertKind::Warning,
+        BlockQuoteKind::Caution => AlertKind::Caution,
+    }
 }
 
 fn heading_level(level: HeadingLevel) -> u8 {

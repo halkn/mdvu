@@ -6,14 +6,14 @@ expression: "plain(\"tests/fixtures/gfm/nested.md\", \"80\")"
 ────────────────────────────────────────────────────────────────────────────────
 
 • level one
-  • level two
-    • level three
+  ◦ level two
+    ▪ level three
       • level four
 • back to one
 
 1. ordered one
    1. ordered two
-      • bullet inside ordered
+      ▪ bullet inside ordered
 2. ordered one again
 
 │ quote level one

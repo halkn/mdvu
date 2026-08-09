@@ -198,10 +198,19 @@ integration.
 
 Rendered: ATX headings, paragraphs, bold, italic, strikethrough, inline code,
 fenced and indented code blocks, ordered and unordered lists, nested lists, task
-lists, block quotes, nested quotes, horizontal rules, GFM tables, links,
+lists, block quotes, nested quotes, alerts, horizontal rules, GFM tables, links,
 autolinks, images, footnotes, and hard and soft breaks. An image standing alone
 in its paragraph is drawn inline where the terminal supports it, and is a text
 placeholder everywhere else; see [Images](#images).
+
+A quote that opens with `[!NOTE]`, `[!TIP]`, `[!IMPORTANT]`, `[!WARNING]` or
+`[!CAUTION]` is drawn as a labelled box in a colour matching its kind. The label
+is text rather than an icon, so no font beyond the box drawing characters is
+assumed, and the kind is still readable under `--plain`. Alerts work in both
+flavors — Azure DevOps Wiki uses the same syntax — and an unrecognised kind such
+as `[!FOO]` stays an ordinary quote with its marker intact.
+
+Bullets change with nesting depth, cycling `•`, `◦` and `▪`.
 
 Tables get column widths from intrinsic minimum and preferred widths, measured in
 display columns. When even the minimum widths do not fit, the table becomes a
