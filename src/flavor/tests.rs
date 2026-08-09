@@ -361,3 +361,53 @@ fn markdown_around_extensions_keeps_its_source_lines() {
     assert_eq!(doc.blocks[1].range().line_start, 3);
     assert_eq!(doc.blocks[2].range().line_start, 7);
 }
+
+#[test]
+fn alerts_are_recognised_in_both_flavors() {
+    for doc in [gfm("> [!NOTE]\n> Body.\n"), azure("> [!NOTE]\n> Body.\n")] {
+        let Some(Block::Quote(q)) = doc.blocks.first() else {
+            panic!("expected a quote, got {:?}", kinds(&doc));
+        };
+        assert_eq!(q.kind, Some(AlertKind::Note));
+    }
+}
+
+#[test]
+fn every_alert_kind_maps_to_its_own_variant() {
+    let kinds = [
+        ("NOTE", AlertKind::Note),
+        ("TIP", AlertKind::Tip),
+        ("IMPORTANT", AlertKind::Important),
+        ("WARNING", AlertKind::Warning),
+        ("CAUTION", AlertKind::Caution),
+    ];
+    for (label, expected) in kinds {
+        let doc = gfm(&format!("> [!{label}]\n> Body.\n"));
+        let Some(Block::Quote(q)) = doc.blocks.first() else {
+            panic!("expected a quote for [!{label}]");
+        };
+        assert_eq!(q.kind, Some(expected), "[!{label}]");
+    }
+}
+
+/// An unknown kind is not an error: the quote renders as a quote and the marker
+/// stays visible, so nothing the author wrote disappears.
+#[test]
+fn an_unknown_alert_kind_stays_a_plain_quote() {
+    let doc = gfm("> [!FOO]\n> Body.\n");
+    let Some(Block::Quote(q)) = doc.blocks.first() else {
+        panic!("expected a quote, got {:?}", kinds(&doc));
+    };
+    assert_eq!(q.kind, None);
+    assert!(plain_text_of(&q.blocks).contains("[!FOO]"));
+}
+
+fn plain_text_of(blocks: &[Block]) -> String {
+    blocks
+        .iter()
+        .filter_map(|b| match b {
+            Block::Paragraph(p) => Some(plain_text(&p.content)),
+            _ => None,
+        })
+        .collect()
+}

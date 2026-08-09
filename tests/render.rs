@@ -46,6 +46,9 @@ golden!(gfm_tables_80, "tests/fixtures/gfm/tables.md", "80");
 golden!(gfm_nested_40, "tests/fixtures/gfm/nested.md", "40");
 golden!(gfm_nested_80, "tests/fixtures/gfm/nested.md", "80");
 golden!(gfm_footnotes_40, "tests/fixtures/gfm/footnotes.md", "40");
+golden!(gfm_alerts_40, "tests/fixtures/gfm/alerts.md", "40");
+golden!(gfm_alerts_80, "tests/fixtures/gfm/alerts.md", "80");
+golden!(gfm_alerts_120, "tests/fixtures/gfm/alerts.md", "120");
 golden!(gfm_wide_table_40, "tests/fixtures/gfm/wide-table.md", "40");
 golden!(
     gfm_wide_table_120,

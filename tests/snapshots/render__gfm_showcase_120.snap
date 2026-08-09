@@ -12,8 +12,8 @@ A paragraph with bold, italic, struck and inline code. A second sentence on a so
 
 • first bullet
 • second bullet
-  • nested bullet
-  • another nested bullet
+  ◦ nested bullet
+  ◦ another nested bullet
 • third bullet
 
 1. first step

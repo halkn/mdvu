@@ -2,6 +2,7 @@
 
 use crate::cli::Theme as ThemeOption;
 use crate::layout::{StyleRole, SyntaxKind};
+use crate::markdown::model::AlertKind;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Color {
@@ -140,9 +141,12 @@ impl Theme {
         match role {
             StyleRole::Normal => Style::plain(),
             StyleRole::Muted => Style::fg(subtle).dim(),
+            // Six levels cannot all be told apart in 16 colours, so the styling
+            // carries three tiers and the `#` count carries the exact level.
             StyleRole::Heading(1) => Style::fg(accent).bold().underline(),
             StyleRole::Heading(2) => Style::fg(accent).bold(),
-            StyleRole::Heading(_) => Style::fg(accent),
+            StyleRole::Heading(3) => Style::fg(accent),
+            StyleRole::Heading(_) => Style::fg(accent).dim(),
             StyleRole::Strong => Style::plain().bold(),
             StyleRole::Emphasis => Style::plain().italic(),
             StyleRole::Strike => Style::plain().strikethrough(),
@@ -164,6 +168,7 @@ impl Theme {
                 Variant::Dark => Color::BrightGreen,
                 Variant::Light => Color::Green,
             }),
+            StyleRole::Alert(kind) => Style::fg(self.alert(kind)),
             StyleRole::ListMarker => Style::fg(accent),
             StyleRole::TaskChecked => Style::fg(Color::Green),
             StyleRole::TaskUnchecked => Style::fg(subtle),
@@ -174,6 +179,32 @@ impl Theme {
             StyleRole::InitialLine => Style::fg(Color::Yellow).dim(),
             StyleRole::Status => Style::plain().reverse(),
             StyleRole::Syntax(kind) => self.syntax(kind),
+        }
+    }
+
+    /// Alert colours follow the severity the kind names, and stay inside the
+    /// same 16-colour palette as everything else. The bright variants only
+    /// appear on dark, where the plain ones are too dim to read as chrome.
+    fn alert(&self, kind: AlertKind) -> Color {
+        let dark = self.variant == Variant::Dark;
+        match kind {
+            AlertKind::Note => {
+                if dark {
+                    Color::BrightBlue
+                } else {
+                    Color::Blue
+                }
+            }
+            AlertKind::Tip => {
+                if dark {
+                    Color::BrightGreen
+                } else {
+                    Color::Green
+                }
+            }
+            AlertKind::Important => Color::Magenta,
+            AlertKind::Warning => Color::Yellow,
+            AlertKind::Caution => Color::Red,
         }
     }
 
@@ -222,14 +253,37 @@ mod tests {
     #[test]
     fn heading_levels_are_distinguishable() {
         let t = Theme::new(Variant::Dark);
-        assert_ne!(
-            t.style(StyleRole::Heading(1)),
-            t.style(StyleRole::Heading(2))
-        );
-        assert_ne!(
-            t.style(StyleRole::Heading(2)),
-            t.style(StyleRole::Heading(3))
-        );
+        // Three tiers of styling; the `#` count carries the exact level.
+        for level in 1..4 {
+            assert_ne!(
+                t.style(StyleRole::Heading(level)),
+                t.style(StyleRole::Heading(level + 1)),
+                "levels {level} and {}",
+                level + 1
+            );
+        }
+    }
+
+    /// Five kinds, five colours: an alert must never be mistaken for another.
+    #[test]
+    fn alert_kinds_have_distinct_colours() {
+        let kinds = [
+            AlertKind::Note,
+            AlertKind::Tip,
+            AlertKind::Important,
+            AlertKind::Warning,
+            AlertKind::Caution,
+        ];
+        for variant in [Variant::Dark, Variant::Light] {
+            let theme = Theme::new(variant);
+            let mut seen = Vec::new();
+            for kind in kinds {
+                let style = theme.style(StyleRole::Alert(kind));
+                assert!(!style.is_plain(), "{kind:?} in {variant:?}");
+                assert!(!seen.contains(&style), "{kind:?} repeats a colour");
+                seen.push(style);
+            }
+        }
     }
 
     #[test]
@@ -242,6 +296,7 @@ mod tests {
             StyleRole::InlineCode,
             StyleRole::Link,
             StyleRole::Quote,
+            StyleRole::Alert(AlertKind::Note),
             StyleRole::ListMarker,
             StyleRole::Warning,
             StyleRole::Error,

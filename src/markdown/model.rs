@@ -124,8 +124,35 @@ pub struct ListItem {
     pub range: SourceRange,
 }
 
+/// GFM alert kind carried by a block quote that opens with `[!NOTE]` and
+/// friends. Azure DevOps Wiki uses the same syntax, so this stays flavor-neutral.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AlertKind {
+    Note,
+    Tip,
+    Important,
+    Warning,
+    Caution,
+}
+
+impl AlertKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            AlertKind::Note => "Note",
+            AlertKind::Tip => "Tip",
+            AlertKind::Important => "Important",
+            AlertKind::Warning => "Warning",
+            AlertKind::Caution => "Caution",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QuoteBlock {
+    /// `Some` for a GFM alert. An alert is a quote with a label, not a block of
+    /// its own, so every traversal that already walks `Block::Quote` keeps
+    /// working unchanged.
+    pub kind: Option<AlertKind>,
     pub blocks: Vec<Block>,
     pub range: SourceRange,
 }
