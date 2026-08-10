@@ -6,7 +6,7 @@ expression: "plain(\"tests/fixtures/gfm/footnotes.md\", \"40\")"
 ────────────────────────────────────────
 
 A claim that needs a source[^source] and
- another one[^long].
+another one[^long].
 
 Text with an inline reference[^source]
 repeated.

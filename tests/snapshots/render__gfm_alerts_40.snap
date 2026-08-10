@@ -12,7 +12,7 @@ expression: "plain(\"tests/fixtures/gfm/alerts.md\", \"40\")"
 
 ╭─ Tip
 │ Helpful advice for doing things better
-│  or more easily.
+│ or more easily.
 ╰─
 
 ╭─ Important
@@ -56,7 +56,7 @@ expression: "plain(\"tests/fixtures/gfm/alerts.md\", \"40\")"
 ╰─
 
 An alert with no body at all still shows
- its label.
+its label.
 
 ## Wrapping
 ────────────────────────────────────────
@@ -64,6 +64,6 @@ An alert with no body at all still shows
 ╭─ Important
 │ A long alert body that has to wrap at
 │ a narrow terminal width, so the border
-│  and the label stay aligned with the
+│ and the label stay aligned with the
 │ text under them.
 ╰─

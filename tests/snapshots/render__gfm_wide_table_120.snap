@@ -6,7 +6,7 @@ expression: "plain(\"tests/fixtures/gfm/wide-table.md\", \"120\")"
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 Six columns of unbreakable identifiers cannot fit a narrow terminal, so the table degrades to a vertical list instead of
- a broken grid.
+a broken grid.
 
 ┌────────────┬────────────┬─────────────┬────────────┬────────────────────────────┬──────────────┐
 │ identifier │ descriptor │ qualifier   │ annotation │ とても長い日本語の見出し   │ remainder    │
