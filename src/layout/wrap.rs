@@ -128,20 +128,20 @@ pub fn wrap_spans(spans: &[RenderedSpan], width: usize) -> Vec<Vec<RenderedSpan>
     let mut used = 0usize;
 
     for ch in chunks {
-        // Leading whitespace on a continuation line is dropped.
-        if line.is_empty() && ch.kind == ChunkKind::Space {
-            continue;
-        }
-        if used + ch.width <= width || line.is_empty() {
-            used += ch.width;
-            line.push(ch);
-            continue;
-        }
         // A chunk carries its own kinsoku context, so a break between chunks is
         // always legal and the line needs no adjustment. `flatten` drops the
         // trailing whitespace that the break exposes.
-        lines.push(flatten(std::mem::take(&mut line)));
-        used = ch.width;
+        if used + ch.width > width && !line.is_empty() {
+            lines.push(flatten(std::mem::take(&mut line)));
+            used = 0;
+        }
+        // Leading whitespace on a continuation line is dropped, including a
+        // space that overflowed: the break it caused is already represented by
+        // the line boundary.
+        if line.is_empty() && ch.kind == ChunkKind::Space {
+            continue;
+        }
+        used += ch.width;
         line.push(ch);
     }
     if !line.is_empty() {
@@ -485,6 +485,29 @@ mod tests {
         let out = wrap_spans(&normal("これは mixed テキスト with English です"), 12);
         assert!(widths(&out).iter().all(|w| *w <= 12), "{:?}", texts(&out));
         assert!(texts(&out).concat().contains("English"));
+    }
+
+    /// Regression: the space that caused the break used to be carried onto the
+    /// continuation line, which only the width boundary exposes.
+    #[test]
+    fn a_space_that_overflows_does_not_indent_the_next_line() {
+        let out = wrap_spans(
+            &normal("Helpful advice for doing things better or more easily."),
+            38,
+        );
+        assert_eq!(
+            texts(&out),
+            vec!["Helpful advice for doing things better", "or more easily."]
+        );
+    }
+
+    #[test]
+    fn a_space_that_overflows_does_not_leave_a_blank_line_in_a_paragraph() {
+        let text = "Helpful advice for doing things better \
+                    abcdefghijklmnopqrstuvwxyzabcdefghijkl end.";
+        let out = texts(&wrap_spans(&normal(text), 38));
+        assert!(!out.iter().any(|l| l.is_empty()), "{out:?}");
+        assert_eq!(out.join(" "), text);
     }
 
     #[test]
