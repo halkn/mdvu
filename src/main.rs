@@ -46,6 +46,9 @@ fn run(cli: &Cli) -> Result<()> {
     diagram::resolve(&mut document, cli.mermaid, cli.flavor);
     let inline = InlineContext {
         mermaid: cli.mermaid,
+        // The root depends on the path alone, so a reload under `--watch` keeps
+        // the boundary the document was opened with.
+        content_root: loaded.base_dir.as_deref().and_then(image::content_root),
         base_dir: loaded.base_dir,
         highlight: cli.highlight(color),
         images: cli.images(ctx, color).map(image::ImageSupport::detect),

@@ -131,7 +131,7 @@ mod tests {
                 height: 20,
             },
         };
-        crate::image::resolve("a.png", Some(dir.path()), support, cols).expect("resolvable")
+        crate::image::resolve("a.png", Some(dir.path()), None, support, cols).expect("resolvable")
     }
 
     fn line(image: Option<Rc<Placement>>, indent: &str) -> RenderedLine {

@@ -392,7 +392,13 @@ fn drawable_image(
     let [Inline::Image(image)] = p.content.as_slice() else {
         return None;
     };
-    crate::image::resolve(&image.dest, ctx.base_dir.as_deref(), support, width)
+    crate::image::resolve(
+        &image.dest,
+        ctx.base_dir.as_deref(),
+        ctx.content_root.as_deref(),
+        support,
+        width,
+    )
 }
 
 /// Bullets by nesting depth. All three are East Asian Width Ambiguous, the same
