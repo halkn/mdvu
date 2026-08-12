@@ -362,6 +362,50 @@ fn an_image_outside_the_document_directory_keeps_its_placeholder() {
     assert!(out.contains("[image: a]"));
 }
 
+/// A wiki keeps its attachments at the repository root, so a page in a
+/// subdirectory reaches them with `../` or with a path from the root.
+#[test]
+fn a_page_reads_attachments_from_the_repository_root() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("wiki");
+    std::fs::create_dir_all(root.join(".git")).unwrap();
+    std::fs::create_dir_all(root.join(".attachments")).unwrap();
+    std::fs::create_dir_all(root.join("design")).unwrap();
+    std::fs::copy(
+        "tests/fixtures/gfm/.attachments/architecture.png",
+        root.join(".attachments/architecture.png"),
+    )
+    .unwrap();
+    std::fs::copy(
+        "tests/fixtures/gfm/.attachments/architecture.png",
+        dir.path().join("outside.png"),
+    )
+    .unwrap();
+    let doc = root.join("design/platform.md");
+    std::fs::write(
+        &doc,
+        "![relative](../.attachments/architecture.png)\n\n\
+         ![from the root](/.attachments/architecture.png)\n\n\
+         ![escaping](../../outside.png)\n",
+    )
+    .unwrap();
+
+    let out = mdvu()
+        .args(["--no-pager", "--color", "always", "--images", "kitty"])
+        .arg(&doc)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let out = String::from_utf8(out).expect("output is utf-8");
+    assert_eq!(out.matches("\x1b_Ga=T,f=100").count(), 2);
+    assert!(!out.contains("[image: relative]"));
+    assert!(!out.contains("[image: from the root]"));
+    // The root is the boundary: a path above it is still refused.
+    assert!(out.contains("[image: escaping]"));
+}
+
 #[test]
 fn a_document_on_stdin_has_no_directory_to_read_images_from() {
     let out = mdvu()

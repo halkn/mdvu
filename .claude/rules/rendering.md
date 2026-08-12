@@ -38,7 +38,8 @@ diagram は **parse 直後・layout 前に一度だけ** render し、結果を 
 - 予約行は全行に `source_range` を持たせる。`--line` と `--watch` のアンカーが行に紐づいているため。
 - 画像化するかどうかは `InlineContext::images`（`highlight` と同じ扱い）で決まる。`None` のときの出力は画像機能が無かった頃と 1 バイトも変わらない。golden snapshot はこの状態を検証している。
 - container（quote / list / details）は子行の `image` をそのまま引き継ぐ。落とすと予約された空行だけが残り、何も無い隙間になる。画像の開始桁は「その行が既に持っているテキストの表示幅」なので、prefix を足すだけで自然にずれる。
-- **ファイルを読む条件は `image/mod.rs` に集約する。** base_dir 配下・スキーム無し・拡張子 allowlist・magic byte 一致・サイズ上限のいずれかを満たさなければ placeholder へ戻す。エラーにも exit code の変化にもしない。mdvu は文書中の宛先を開かないのが既定であり、画像だけが例外なので、その例外の範囲を 1 箇所で読めるようにしておく。
+- **ファイルを読む条件は `image/mod.rs` に集約する。** content root 配下・スキーム無し・拡張子 allowlist・magic byte 一致・サイズ上限のいずれかを満たさなければ placeholder へ戻す。エラーにも exit code の変化にもしない。mdvu は文書中の宛先を開かないのが既定であり、画像だけが例外なので、その例外の範囲を 1 箇所で読めるようにしておく。
+- **信頼境界は content root（`.git` を持つ最も近い祖先、無ければ文書の親）。** Wiki は添付をページの隣ではなくルートの `.attachments/` に置くため、文書の親では狭すぎる。マーカーに `.attachments` を使わないのは、1 リポジトリに複数あり得て、最も近いものがページの参照先とは限らないため。先頭 `/` は content root 起点として解決し、ファイルシステムの絶対パスとしては扱わない。root の検出は `main.rs` で 1 回だけ行い `InlineContext` で運ぶ（パスにしか依存しないので `--watch` の reload でも変わらない）。
 - 画素寸法はヘッダから直接読む（`image/dimensions.rs`）。デコーダを持ち込まない。プロトコルは元のバイト列を base64 で渡すだけなので、必要なのはセル数の計算に使う寸法だけ。
 
 ## StyleRole

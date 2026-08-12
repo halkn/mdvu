@@ -308,8 +308,13 @@ placeholder without an error:
 - the document came from a file, so there is a directory to resolve against
 - the destination is a local path with no URL scheme; `http`, `https` and `data`
   are never fetched, and `mdvu` makes no network requests
-- the resolved path stays inside the document's directory, after both sides are
-  canonicalised, so `../` and a symlink pointing outside are both refused
+- the resolved path stays inside the content root, after both sides are
+  canonicalised, so `../` leaving it and a symlink pointing outside are both
+  refused. The content root is the nearest ancestor of the document holding a
+  `.git` entry, and the document's own directory when there is none, so a wiki
+  page reaches the `.attachments` directory at the repository root. A
+  destination starting with `/` is read from the content root, the way Azure
+  DevOps and GitHub resolve it, never from the filesystem root
 - the extension is `png`, `jpg`, `jpeg`, `gif` or `webp`, and the file's leading
   bytes agree with it
 - the file is at most 10 MiB
@@ -361,7 +366,8 @@ up, because each glyph is measured as one display column.
   environment variable, so an unlisted terminal needs `--images` naming the
   protocol.
 - An image is drawn only when its paragraph holds nothing else, and only from
-  the document's own directory. SVG is never drawn.
+  the content root: the repository the document sits in, or its own directory
+  outside one. SVG is never drawn.
 - `--icons nerd` assumes each glyph occupies one column, which is what
   `mdvu` measures and what a Nerd Font Mono variant draws. A terminal that draws
   them two columns wide shifts the rest of that line by one.
