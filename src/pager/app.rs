@@ -240,10 +240,8 @@ fn restore(
 fn handle_key(state: &mut PagerState, key: event::KeyEvent, texts: &[String]) -> bool {
     match map(key, state.mode) {
         Input::Navigate(action) => return state.apply(action),
-        Input::SearchChar(c) => state.input.push(c),
-        Input::SearchBackspace => {
-            state.input.pop();
-        }
+        Input::SearchChar(c) => state.insert_search_char(c, texts),
+        Input::SearchBackspace => state.delete_search_char(texts),
         Input::SearchConfirm => state.confirm_search(texts),
         Input::SearchCancel => state.cancel_search(),
         Input::OutlineMove(delta) => state.move_outline(delta),

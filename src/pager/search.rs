@@ -54,6 +54,19 @@ impl Search {
         self.recompute(lines);
     }
 
+    /// Apply a query as typed, including an empty one. Used by the prompt while
+    /// it is being edited, where deleting the last character has to clear the
+    /// matches rather than fall back to the previous query.
+    pub fn replace_query(&mut self, query: &str, lines: &[String]) {
+        self.query = query.to_string();
+        self.recompute(lines);
+    }
+
+    /// Zero-based position of the current match, for the status bar.
+    pub fn position(&self) -> Option<usize> {
+        self.current
+    }
+
     /// Re-run the search, keeping the cursor near where it was. Called after a
     /// re-layout, since rendered line numbers change with width.
     pub fn recompute(&mut self, lines: &[String]) {

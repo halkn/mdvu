@@ -40,7 +40,7 @@ pub fn draw(frame: &mut Frame, lines: &[RenderedLine], state: &PagerState, ctx: 
     let rows: Vec<RatLine> = (state.top..(state.top + state.height).min(lines.len()))
         .map(|index| {
             let highlights: Vec<(usize, usize)> = state
-                .search
+                .visible_search()
                 .matches_on(index)
                 .map(|m| (m.start, m.end))
                 .collect();

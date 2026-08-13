@@ -89,6 +89,12 @@ pub struct PagerState {
     pub mode: Mode,
     pub input: String,
     pub search: Search,
+    /// Matches for the query being typed. Kept apart from `search` so that
+    /// cancelling the prompt leaves the confirmed search untouched.
+    preview: Search,
+    /// Viewport when the prompt opened, so an incremental search starts from
+    /// the reader's place and cancelling returns them to it.
+    search_origin: Option<(usize, usize)>,
     pub status: Option<String>,
     /// Rendered line opened by `--line`, highlighted until the reader moves.
     pub initial_line: Option<usize>,
@@ -110,6 +116,8 @@ impl PagerState {
             mode: Mode::Normal,
             input: String::new(),
             search: Search::default(),
+            preview: Search::default(),
+            search_origin: None,
             status: None,
             initial_line: None,
             outline: Outline::default(),
@@ -168,6 +176,8 @@ impl PagerState {
             Action::StartSearch => {
                 self.mode = Mode::Search;
                 self.input.clear();
+                self.preview = Search::default();
+                self.search_origin = Some((self.top, self.left));
             }
             Action::NextMatch => self.jump(true),
             Action::PreviousMatch => self.jump(false),
@@ -198,10 +208,55 @@ impl PagerState {
         }
     }
 
+    /// Matches to highlight: the query being typed while the prompt is open,
+    /// the confirmed one otherwise.
+    pub fn visible_search(&self) -> &Search {
+        match self.mode {
+            Mode::Search => &self.preview,
+            _ => &self.search,
+        }
+    }
+
+    #[cfg(test)]
+    pub fn preview_search(&self) -> &Search {
+        &self.preview
+    }
+
+    pub fn insert_search_char(&mut self, c: char, lines: &[String]) {
+        self.input.push(c);
+        self.update_preview(lines);
+    }
+
+    pub fn delete_search_char(&mut self, lines: &[String]) {
+        self.input.pop();
+        self.update_preview(lines);
+    }
+
+    /// Re-run the pending query and show where it lands, without waiting for
+    /// Enter. The search always restarts from where the prompt opened, so
+    /// adding a character cannot walk the viewport down the document.
+    fn update_preview(&mut self, lines: &[String]) {
+        let (top, left) = self.search_origin.unwrap_or((self.top, self.left));
+        self.top = top;
+        self.left = left;
+        self.status = None;
+        self.preview.replace_query(&self.input, lines);
+        if !self.preview.is_active() {
+            return;
+        }
+        self.preview.select_from(top);
+        if let Some(m) = self.preview.current() {
+            self.initial_line = None;
+            self.reveal(m.line);
+        }
+    }
+
     /// Confirm the search prompt. Keeps the viewport still when nothing matches.
     pub fn confirm_search(&mut self, lines: &[String]) {
         let query = std::mem::take(&mut self.input);
         self.mode = Mode::Normal;
+        self.preview = Search::default();
+        self.search_origin = None;
         self.search.set_query(&query, lines);
         if !self.search.is_active() {
             return;
@@ -216,9 +271,16 @@ impl PagerState {
         }
     }
 
+    /// Abandon the prompt: the confirmed search and the reading position are
+    /// both as they were before `/` was pressed.
     pub fn cancel_search(&mut self) {
         self.mode = Mode::Normal;
         self.input.clear();
+        self.preview = Search::default();
+        if let Some((top, left)) = self.search_origin.take() {
+            self.top = top;
+            self.left = left;
+        }
     }
 
     fn toggle_outline(&mut self) {
@@ -449,6 +511,83 @@ mod tests {
         s.confirm_search(&lines);
         assert_eq!(s.top, before);
         assert!(s.status.as_deref().unwrap().contains("no match"));
+    }
+
+    fn haystack() -> Vec<String> {
+        (0..100)
+            .map(|i| match i {
+                20 | 42 | 80 => "needle".to_string(),
+                _ => "x".to_string(),
+            })
+            .collect()
+    }
+
+    /// Typing moves the viewport as the query grows, without waiting for Enter.
+    #[test]
+    fn typing_previews_the_first_match_from_where_the_search_started() {
+        let lines = haystack();
+        let mut s = state();
+        s.top = 30;
+        s.apply(Action::StartSearch);
+        for c in "needle".chars() {
+            s.insert_search_char(c, &lines);
+        }
+        assert_eq!(s.mode, Mode::Search);
+        assert!(s.top <= 42 && 42 < s.top + s.height, "top={}", s.top);
+        assert_eq!(s.preview_search().count(), 3);
+
+        // Deleting back to nothing puts the reader where they started.
+        for _ in 0.."needle".len() {
+            s.delete_search_char(&lines);
+        }
+        assert_eq!(s.top, 30);
+        assert_eq!(s.preview_search().count(), 0);
+    }
+
+    #[test]
+    fn a_query_with_no_match_leaves_the_viewport_alone() {
+        let lines = haystack();
+        let mut s = state();
+        s.top = 30;
+        s.apply(Action::StartSearch);
+        for c in "absent".chars() {
+            s.insert_search_char(c, &lines);
+        }
+        assert_eq!(s.top, 30);
+        assert_eq!(s.preview_search().count(), 0);
+    }
+
+    #[test]
+    fn cancelling_a_search_returns_to_where_it_started() {
+        let lines = haystack();
+        let mut s = state();
+        s.top = 30;
+        s.left = 8;
+        s.apply(Action::StartSearch);
+        for c in "needle".chars() {
+            s.insert_search_char(c, &lines);
+        }
+        s.cancel_search();
+        assert_eq!(s.mode, Mode::Normal);
+        assert_eq!((s.top, s.left), (30, 8));
+        assert!(!s.search.is_active());
+    }
+
+    #[test]
+    fn confirming_keeps_the_previewed_match() {
+        let lines = haystack();
+        let mut s = state();
+        s.top = 30;
+        s.apply(Action::StartSearch);
+        for c in "needle".chars() {
+            s.insert_search_char(c, &lines);
+        }
+        let previewed = s.top;
+        s.confirm_search(&lines);
+        assert_eq!(s.mode, Mode::Normal);
+        assert_eq!(s.top, previewed);
+        assert_eq!(s.search.current().unwrap().line, 42);
+        assert_eq!(s.preview_search().count(), 0);
     }
 
     #[test]
