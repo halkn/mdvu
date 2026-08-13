@@ -257,7 +257,14 @@ fn status_bar<'a>(
 ) -> Paragraph<'a> {
     let style = convert(ctx.theme.style(StyleRole::Status));
     if state.mode == Mode::Search {
-        return Paragraph::new(RatLine::from(prompt_spans(state, style)));
+        let mut spans = prompt_spans(state, style);
+        if !state.input.is_empty() {
+            spans.push(RatSpan::styled(
+                format!("  {}", tally(state.visible_search())),
+                style,
+            ));
+        }
+        return Paragraph::new(RatLine::from(spans));
     }
 
     let mut right = format!(
@@ -275,9 +282,9 @@ fn status_bar<'a>(
     }
     if state.search.is_active() {
         right.push_str(&format!(
-            "  /{} ({})",
+            "  /{} {}",
             state.search.query(),
-            state.search.count()
+            tally(&state.search)
         ));
     }
 
@@ -289,6 +296,14 @@ fn status_bar<'a>(
         format!("{title}{}{right}", " ".repeat(gap.max(1))),
         style,
     )))
+}
+
+/// Where the reader is within the matches: `(3/12)`, or that there are none.
+fn tally(search: &crate::pager::search::Search) -> String {
+    match search.position() {
+        Some(index) => format!("({}/{})", index + 1, search.count()),
+        None => "(no match)".to_string(),
+    }
 }
 
 /// The prompt with its caret. `TerminalGuard` owns cursor visibility and keeps
@@ -502,6 +517,27 @@ mod tests {
         assert!(open.contains("Title"), "{open}");
         // Nested headings are indented under their parent.
         assert!(open.contains("  Section"), "{open}");
+    }
+
+    #[test]
+    fn the_status_bar_says_which_match_is_current() {
+        let lines: Vec<RenderedLine> = (0..12)
+            .map(|i| line(if i % 4 == 0 { "needle" } else { "x" }))
+            .collect();
+        let texts: Vec<String> = lines.iter().map(|l| l.text()).collect();
+        let mut state = PagerState::new(lines.len(), 20, 5, 40);
+
+        state.apply(crate::pager::state::Action::StartSearch);
+        for c in "needle".chars() {
+            state.insert_search_char(c, &texts);
+        }
+        // While typing, the prompt carries the count of what is typed so far.
+        assert!(screen(&state, &lines).join("\n").contains("(1/3)"));
+
+        state.confirm_search(&texts);
+        state.apply(crate::pager::state::Action::NextMatch);
+        let bar = screen(&state, &lines).join("\n");
+        assert!(bar.contains("/needle (2/3)"), "{bar}");
     }
 
     #[test]

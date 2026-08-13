@@ -218,13 +218,24 @@ impl PagerState {
         if !self.search.is_active() {
             return;
         }
+        let before = self.search.position();
         let found = if forward {
             self.search.next()
         } else {
             self.search.previous()
         };
         match found {
-            Some(m) => self.reveal(m.line),
+            Some(m) => {
+                self.reveal(m.line);
+                // Cycling past either end is easy to mistake for "no more
+                // matches", so say that it happened.
+                if let (Some(before), Some(after)) = (before, self.search.position())
+                    && self.search.count() > 1
+                    && (forward && after <= before || !forward && after >= before)
+                {
+                    self.status = Some("wrapped".to_string());
+                }
+            }
             None => self.status = Some(format!("no match: {}", self.search.query())),
         }
     }
@@ -728,6 +739,22 @@ mod tests {
         assert_eq!(s.input, "needle");
         // The preview follows every edit, not just insertions.
         assert_eq!(s.preview_search().count(), 3);
+    }
+
+    #[test]
+    fn cycling_past_the_last_match_says_it_wrapped() {
+        let lines = haystack();
+        let mut s = typed("needle", &lines);
+        s.confirm_search(&lines);
+        s.apply(Action::NextMatch);
+        assert_eq!(s.status, None);
+        s.apply(Action::NextMatch);
+        assert_eq!(s.status, None);
+        // Fourth match of three: back to the first.
+        s.apply(Action::NextMatch);
+        assert_eq!(s.status.as_deref(), Some("wrapped"));
+        s.apply(Action::PreviousMatch);
+        assert_eq!(s.status.as_deref(), Some("wrapped"));
     }
 
     #[test]

@@ -167,8 +167,11 @@ reading stdin.
 | `?` | Key list, `j` / `k` to scroll, `Esc` to close |
 | `q`, `Esc` | Quit |
 
-Search runs over the rendered text, is case-insensitive, highlights every match
-on screen and cycles with `n` and `N`. An empty query keeps the previous one.
+Search runs over the rendered text, highlights every match on screen and cycles
+with `n` and `N`, saying `wrapped` when it passes either end. The status bar
+shows which match is current, as `(3/12)`. An empty query keeps the previous
+one. Case follows the query: a query in lower case matches any case, and one
+capital makes the whole query case-sensitive.
 
 The document follows the query as it is typed: every keystroke jumps to the
 first match at or after where `/` was pressed, so a query can be judged before
