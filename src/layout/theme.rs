@@ -176,6 +176,10 @@ impl Theme {
             StyleRole::Warning => Style::fg(Color::Yellow),
             StyleRole::Error => Style::fg(Color::Red),
             StyleRole::SearchMatch => Style::plain().reverse(),
+            // Reversed as well, so a match reads the same way wherever it is,
+            // but coloured: the reader has to see which one they are standing
+            // on without counting.
+            StyleRole::CurrentMatch => Style::fg(Color::Yellow).reverse().bold(),
             StyleRole::InitialLine => Style::fg(Color::Yellow).dim(),
             StyleRole::Status => Style::plain().reverse(),
             StyleRole::Syntax(kind) => self.syntax(kind),

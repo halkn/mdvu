@@ -168,7 +168,9 @@ reading stdin.
 | `q`, `Esc` | Quit |
 
 Search runs over the rendered text, highlights every match on screen and cycles
-with `n` and `N`, saying `wrapped` when it passes either end. The status bar
+with `n` and `N`, saying `wrapped` when it passes either end. The match being
+visited is coloured, the rest are plain reversed, so which one the viewport
+moved to is visible without counting. The status bar
 shows which match is current, as `(3/12)`. An empty query keeps the previous
 one. Case follows the query: a query in lower case matches any case, and one
 capital makes the whole query case-sensitive.

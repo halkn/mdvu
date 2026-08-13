@@ -44,6 +44,9 @@ pub enum StyleRole {
     Warning,
     Error,
     SearchMatch,
+    /// The match `n` and `N` are on, told apart from the others so the reader
+    /// can see which one the viewport was moved to.
+    CurrentMatch,
     InitialLine,
     Status,
     /// A token inside a code block. Highlighting classifies tokens; the theme
