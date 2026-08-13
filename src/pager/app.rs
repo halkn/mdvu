@@ -197,7 +197,6 @@ fn event_loop(input: PagerInput) -> Result<()> {
                     rows.saturating_sub(1) as usize,
                     columns as usize,
                 );
-                state.search.recompute(&texts);
                 state.set_outline(outline(&document, &rendered));
                 state.initial_line = None;
                 if let Some(line) = anchor
@@ -205,6 +204,9 @@ fn event_loop(input: PagerInput) -> Result<()> {
                 {
                     state.top = index.min(state.max_top());
                 }
+                // After the viewport is back where it was, so the current match
+                // is chosen from the reader's place in the new layout.
+                state.recompute_searches(&texts);
             }
             _ => {}
         }
@@ -226,7 +228,6 @@ fn restore(
         state.height,
         state.width,
     );
-    state.search.recompute(texts);
     state.set_outline(outline(document, rendered));
     state.initial_line = None;
     if let Some(line) = anchor
@@ -234,6 +235,7 @@ fn restore(
     {
         state.top = index.min(state.max_top());
     }
+    state.recompute_searches(texts);
 }
 
 /// Returns `false` when the pager should exit.

@@ -69,8 +69,9 @@ impl Search {
         self.current
     }
 
-    /// Re-run the search, keeping the cursor near where it was. Called after a
-    /// re-layout, since rendered line numbers change with width.
+    /// Re-run the search. Called after a re-layout, since rendered line numbers
+    /// change with width. The cursor lands on the first match; callers that
+    /// want it near the reader follow with `select_from`.
     pub fn recompute(&mut self, lines: &[String]) {
         self.matches.clear();
         if self.query.is_empty() {

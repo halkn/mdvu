@@ -328,9 +328,7 @@ impl PagerState {
     /// Enter. The search always restarts from where the prompt opened, so
     /// adding a character cannot walk the viewport down the document.
     fn update_preview(&mut self, lines: &[String]) {
-        let (top, left) = self.search_origin.unwrap_or((self.top, self.left));
-        self.top = top;
-        self.left = left;
+        let top = self.restore_origin();
         self.status = None;
         self.preview.replace_query(&self.input, lines);
         if !self.preview.is_active() {
@@ -341,6 +339,18 @@ impl PagerState {
             self.initial_line = None;
             self.reveal(m.line);
         }
+    }
+
+    /// Re-run both searches after a re-layout. Rendered line numbers and byte
+    /// offsets change with the width, and the prompt's own matches have to
+    /// follow too, or the highlights drawn while it is open belong to the
+    /// previous layout. Re-selecting from the viewport keeps the current match
+    /// where the reader is instead of sending it back to the first one.
+    pub fn recompute_searches(&mut self, lines: &[String]) {
+        self.search.recompute(lines);
+        self.search.select_from(self.top);
+        self.preview.recompute(lines);
+        self.preview.select_from(self.top);
     }
 
     /// Confirm the search prompt. Keeps the viewport still when nothing matches.
@@ -370,10 +380,20 @@ impl PagerState {
         self.input.clear();
         self.caret = 0;
         self.preview = Search::default();
-        if let Some((top, left)) = self.search_origin.take() {
-            self.top = top;
-            self.left = left;
+        self.restore_origin();
+        self.search_origin = None;
+    }
+
+    /// Put the viewport back where the prompt opened. The surface can have been
+    /// laid out again since then — a resize, or a `--watch` reload of a shorter
+    /// file — so the remembered offsets are clamped into the current bounds
+    /// rather than trusted.
+    fn restore_origin(&mut self) -> usize {
+        if let Some((top, left)) = self.search_origin {
+            self.top = top.min(self.max_top());
+            self.left = left.min(self.max_left());
         }
+        self.top
     }
 
     fn toggle_outline(&mut self) {
@@ -739,6 +759,51 @@ mod tests {
         assert_eq!(s.input, "needle");
         // The preview follows every edit, not just insertions.
         assert_eq!(s.preview_search().count(), 3);
+    }
+
+    /// A resize or a `--watch` reload can shrink the surface while the prompt
+    /// is open. The remembered position must not put the viewport past the end.
+    #[test]
+    fn a_shorter_document_does_not_strand_the_restored_viewport() {
+        let lines = haystack();
+        let mut s = typed("needle", &lines);
+        assert_eq!(s.search_origin, Some((0, 0)));
+        s.top = 90;
+        s.search_origin = Some((90, 40));
+
+        let short: Vec<String> = lines[..30].to_vec();
+        s.resize(short.len(), 10, 10, 40);
+        s.insert_search_char('x', &short);
+        assert!(s.top <= s.max_top(), "top={} max={}", s.top, s.max_top());
+
+        s.cancel_search();
+        assert!(s.top <= s.max_top(), "top={} max={}", s.top, s.max_top());
+        assert!(s.left <= s.max_left());
+    }
+
+    #[test]
+    fn a_relayout_keeps_the_current_match_near_the_reader() {
+        let lines = haystack();
+        let mut s = typed("needle", &lines);
+        s.confirm_search(&lines);
+        s.apply(Action::NextMatch);
+        s.apply(Action::NextMatch);
+        assert_eq!(s.search.current().unwrap().line, 80);
+
+        // Same surface, laid out again: the highlight stays where the reader
+        // is instead of going back to the first match.
+        s.recompute_searches(&lines);
+        assert_eq!(s.search.current().unwrap().line, 80);
+    }
+
+    #[test]
+    fn a_relayout_also_re_runs_the_query_being_typed() {
+        let lines = haystack();
+        let mut s = typed("needle", &lines);
+        let widened: Vec<String> = lines.iter().map(|l| format!("{l} {l}")).collect::<Vec<_>>();
+        s.recompute_searches(&widened);
+        // Two occurrences per line now, and the prompt's matches follow.
+        assert_eq!(s.preview_search().count(), 6);
     }
 
     #[test]

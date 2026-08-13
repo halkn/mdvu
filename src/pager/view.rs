@@ -114,9 +114,14 @@ fn draw_help(frame: &mut Frame, state: &PagerState, ctx: &ViewContext<'_>, body:
     let inner_height = help_rows(body.height as usize);
     let column = help::key_column();
 
+    // The terminal can grow between two key presses, so the offset is clamped
+    // here rather than only where it is moved.
+    let top = state
+        .help_top
+        .min(help::ENTRIES.len().saturating_sub(inner_height));
     let rows: Vec<RatLine> = help::ENTRIES
         .iter()
-        .skip(state.help_top)
+        .skip(top)
         .take(inner_height)
         .map(|entry| {
             let text = elide_end(&help::row(entry, column), inner_width);
@@ -284,13 +289,17 @@ fn status_bar<'a>(
 ) -> Paragraph<'a> {
     let style = convert(ctx.theme.style(StyleRole::Status));
     if state.mode == Mode::Search {
-        let mut spans = prompt_spans(state, style);
-        if !state.input.is_empty() {
-            // The tally sits where it will sit once the search is confirmed, so
-            // confirming does not make it jump across the bar.
-            let tally = tally(state.visible_search());
+        let tally = tally(state.visible_search());
+        // The tally sits where it will sit once the search is confirmed, so
+        // confirming does not make it jump across the bar. A prompt too long to
+        // share the line keeps the room: the caret must stay on screen.
+        let room = display_width(&tally) + 2;
+        let show_tally = !state.input.is_empty() && width > room + MIN_PROMPT;
+        let budget = if show_tally { width - room } else { width };
+        let mut spans = prompt_spans(state, style, budget);
+        if show_tally {
             let used: usize = spans.iter().map(|s| display_width(&s.content)).sum();
-            let gap = width.saturating_sub(used + display_width(&tally)).max(2);
+            let gap = width.saturating_sub(used + display_width(&tally)).max(1);
             spans.push(RatSpan::styled(
                 format!("{}{tally}", " ".repeat(gap)),
                 style,
@@ -338,19 +347,66 @@ fn tally(search: &crate::pager::search::Search) -> String {
     }
 }
 
-/// The prompt with its caret. `TerminalGuard` owns cursor visibility and keeps
-/// it hidden, so the caret is a reversed cell rather than the terminal cursor.
-fn prompt_spans<'a>(state: &PagerState, style: RatStyle) -> Vec<RatSpan<'a>> {
+/// Columns the prompt keeps for itself before the tally is dropped.
+const MIN_PROMPT: usize = 8;
+
+/// The prompt with its caret, windowed to `budget` columns. `TerminalGuard`
+/// owns cursor visibility and keeps it hidden, so the caret is a cell drawn
+/// against the status bar rather than the terminal cursor.
+fn prompt_spans<'a>(state: &PagerState, style: RatStyle, budget: usize) -> Vec<RatSpan<'a>> {
     let caret = state.caret.min(state.input.len());
     let (under, after) = match state.input[caret..].graphemes(true).next() {
         Some(grapheme) => (grapheme.to_string(), &state.input[caret + grapheme.len()..]),
         None => (" ".to_string(), ""),
     };
+    let before = format!("/{}", &state.input[..caret]);
+
+    // A query wider than the bar scrolls: the caret stays at the right edge
+    // instead of being typed into an invisible tail.
+    let head = display_width(&before) + display_width(&under);
+    let before = match head.checked_sub(budget) {
+        Some(over) if over > 0 => drop_columns(&before, over),
+        _ => before,
+    };
+    let left = budget.saturating_sub(display_width(&before) + display_width(&under));
+    let after = take_columns(after, left);
+
     vec![
-        RatSpan::styled(format!("/{}", &state.input[..caret]), style),
-        RatSpan::styled(under, style.add_modifier(Modifier::REVERSED)),
+        RatSpan::styled(before, style),
+        // The status bar is already reversed, so reversing again would draw
+        // nothing; the caret is the one cell that is not.
+        RatSpan::styled(under, style.remove_modifier(Modifier::REVERSED)),
         RatSpan::styled(after.to_string(), style),
     ]
+}
+
+/// Drop `columns` display columns from the front, on grapheme boundaries.
+fn drop_columns(text: &str, columns: usize) -> String {
+    let mut dropped = 0usize;
+    let mut kept = String::new();
+    for grapheme in text.graphemes(true) {
+        if dropped >= columns {
+            kept.push_str(grapheme);
+        } else {
+            dropped += display_width(grapheme);
+        }
+    }
+    kept
+}
+
+/// Keep at most `columns` display columns from the front.
+fn take_columns(text: &str, columns: usize) -> String {
+    let mut used = 0usize;
+    let mut kept = String::new();
+    for grapheme in text.graphemes(true) {
+        let width = display_width(grapheme);
+        if used + width > columns {
+            break;
+        }
+        used += width;
+        kept.push_str(grapheme);
+    }
+    kept
 }
 
 /// Drop leading path components so the file name stays visible.
@@ -635,6 +691,45 @@ mod tests {
         assert!(bar.contains("/needle (2/3)"), "{bar}");
     }
 
+    /// The status bar is drawn reversed, so the caret has to be the cell that
+    /// is not; reversing it again would draw nothing.
+    #[test]
+    fn the_caret_cell_stands_out_from_the_prompt() {
+        let style =
+            convert(Theme::new(crate::layout::theme::Variant::Dark).style(StyleRole::Status));
+        let mut state = PagerState::new(10, 20, 5, 40);
+        state.apply(crate::pager::state::Action::StartSearch);
+        for c in "abc".chars() {
+            state.insert_search_char(c, &[]);
+        }
+        state.edit_search(crate::pager::state::SearchEdit::CaretStart, &[]);
+
+        let spans = prompt_spans(&state, style, 40);
+        assert_eq!(spans[0].content, "/");
+        assert_eq!(spans[1].content, "a");
+        assert_ne!(spans[1].style, spans[0].style);
+        assert_eq!(spans[2].content, "bc");
+        assert_eq!(spans[2].style, spans[0].style);
+    }
+
+    #[test]
+    fn a_query_wider_than_the_bar_scrolls_with_the_caret() {
+        let style =
+            convert(Theme::new(crate::layout::theme::Variant::Dark).style(StyleRole::Status));
+        let mut state = PagerState::new(10, 20, 5, 40);
+        state.apply(crate::pager::state::Action::StartSearch);
+        for c in "abcdefghijklmnopqrstuvwxyz".chars() {
+            state.insert_search_char(c, &[]);
+        }
+
+        let spans = prompt_spans(&state, style, 10);
+        let width: usize = spans.iter().map(|s| display_width(&s.content)).sum();
+        assert!(width <= 10, "{width}");
+        // The caret is still on screen, at the end of what is shown.
+        assert_eq!(spans[1].content, " ");
+        assert!(spans[0].content.ends_with('z'), "{}", spans[0].content);
+    }
+
     #[test]
     fn the_help_overlay_lists_the_bindings() {
         let lines: Vec<RenderedLine> = (0..40).map(|i| line(&format!("body {i}"))).collect();
@@ -654,6 +749,30 @@ mod tests {
         );
         let scrolled = screen(&state, &lines).join("\n");
         assert!(scrolled.contains("Quit"), "{scrolled}");
+
+        // A terminal that grows between key presses shows the whole list, with
+        // no gap left by the offset the short screen needed.
+        let taller: Vec<RenderedLine> = lines.clone();
+        state.resize(taller.len(), 20, 30, 60);
+        let backend = ratatui::backend::TestBackend::new(60, 31);
+        let mut terminal = ratatui::Terminal::new(backend).expect("test backend");
+        let ctx = ViewContext {
+            title: "doc.md",
+            flavor: "gfm",
+            source_lines: taller.len(),
+            diagnostics: 0,
+            theme: Theme::new(crate::layout::theme::Variant::Dark),
+        };
+        terminal
+            .draw(|frame| draw(frame, &taller, &state, &ctx))
+            .expect("draw");
+        let buffer = terminal.backend().buffer();
+        let grown: String = (0..31)
+            .map(|y| (0..60).map(|x| buffer[(x, y)].symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(grown.contains("Down one line"), "{grown}");
+        assert!(grown.contains("Quit"), "{grown}");
 
         state.apply(crate::pager::state::Action::ToggleHelp);
         assert!(!screen(&state, &lines).join("\n").contains("Keys"));
