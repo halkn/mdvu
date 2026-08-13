@@ -15,6 +15,8 @@ pub enum Input {
     OutlineMove(isize),
     OutlineConfirm,
     OutlineCancel,
+    HelpScroll(isize),
+    HelpClose,
     Ignored,
 }
 
@@ -22,7 +24,26 @@ pub fn map(key: KeyEvent, mode: Mode) -> Input {
     match mode {
         Mode::Search => search_mode(key),
         Mode::Outline => outline_mode(key),
+        Mode::Help => help_mode(key),
         Mode::Normal => normal_mode(key),
+    }
+}
+
+/// The overlay owns every key while it is open, so nothing scrolls the document
+/// behind it.
+fn help_mode(key: KeyEvent) -> Input {
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        return match key.code {
+            KeyCode::Char('c') => Input::HelpClose,
+            _ => Input::Ignored,
+        };
+    }
+    match key.code {
+        KeyCode::Char('j') | KeyCode::Down => Input::HelpScroll(1),
+        KeyCode::Char('k') | KeyCode::Up => Input::HelpScroll(-1),
+        // `?` toggles, so it closes the overlay it opened.
+        KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') => Input::HelpClose,
+        _ => Input::Ignored,
     }
 }
 
@@ -76,6 +97,7 @@ fn normal_mode(key: KeyEvent) -> Input {
         KeyCode::Char('0') => Input::Navigate(Action::ResetHorizontal),
         KeyCode::Char('/') => Input::Navigate(Action::StartSearch),
         KeyCode::Char('t') => Input::Navigate(Action::ToggleOutline),
+        KeyCode::Char('?') => Input::Navigate(Action::ToggleHelp),
         KeyCode::Char('n') => Input::Navigate(Action::NextMatch),
         KeyCode::Char('N') => Input::Navigate(Action::PreviousMatch),
         KeyCode::Char('q') | KeyCode::Esc => Input::Navigate(Action::Quit),
@@ -191,6 +213,24 @@ mod tests {
         for code in [KeyCode::Esc, KeyCode::Char('q'), KeyCode::Char('t')] {
             assert_eq!(map(key(code), Mode::Outline), Input::OutlineCancel);
         }
+    }
+
+    #[test]
+    fn question_mark_opens_the_help_and_the_overlay_owns_its_keys() {
+        assert_eq!(
+            normal(KeyCode::Char('?')),
+            Input::Navigate(Action::ToggleHelp)
+        );
+        assert_eq!(
+            map(key(KeyCode::Char('j')), Mode::Help),
+            Input::HelpScroll(1)
+        );
+        assert_eq!(map(key(KeyCode::Up), Mode::Help), Input::HelpScroll(-1));
+        for code in [KeyCode::Esc, KeyCode::Char('q'), KeyCode::Char('?')] {
+            assert_eq!(map(key(code), Mode::Help), Input::HelpClose);
+        }
+        // Nothing behind the overlay moves while it is open.
+        assert_eq!(map(key(KeyCode::Char('G')), Mode::Help), Input::Ignored);
     }
 
     #[test]

@@ -164,10 +164,15 @@ reading stdin.
 | `/` | Search, `Enter` to confirm, `Esc` to cancel |
 | `n` / `N` | Next / previous match |
 | `t` | Heading list, `j` / `k` to select, `Enter` to jump, `Esc` to close |
+| `?` | Key list, `j` / `k` to scroll, `Esc` to close |
 | `q`, `Esc` | Quit |
 
 Search runs over the rendered text, is case-insensitive, highlights every match
 on screen and cycles with `n` and `N`. An empty query keeps the previous one.
+
+`?` opens the same key list inside the pager, so the bindings are readable
+without leaving the document. The list in `src/pager/help.rs` is the source of
+truth for it and for the table above.
 
 `t` opens a list of the document's headings, preselecting the section on screen.
 It works in both flavors and is independent of `[[_TOC_]]`.

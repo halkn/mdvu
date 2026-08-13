@@ -11,6 +11,7 @@ use unicode_segmentation::UnicodeSegmentation;
 use crate::layout::theme::{Color, Style, Theme};
 use crate::layout::wrap::display_width;
 use crate::layout::{RenderedLine, StyleRole};
+use crate::pager::help;
 use crate::pager::state::{Mode, PagerState, source_line_at};
 
 /// A run of text on screen with the role it should be drawn in.
@@ -74,9 +75,39 @@ pub fn draw(frame: &mut Frame, lines: &[RenderedLine], state: &PagerState, ctx: 
         status_bar(state, ctx, current, status.width as usize),
         status,
     );
-    if state.mode == Mode::Outline {
-        draw_outline(frame, state, ctx, body);
+    match state.mode {
+        Mode::Outline => draw_outline(frame, state, ctx, body),
+        Mode::Help => draw_help(frame, state, ctx, body),
+        _ => {}
     }
+}
+
+/// Floating key list. The pager cannot show the README, so the overlay carries
+/// the bindings itself; `help::ENTRIES` is where they are defined.
+fn draw_help(frame: &mut Frame, state: &PagerState, ctx: &ViewContext<'_>, body: Rect) {
+    let area = overlay_area(body, help::ENTRIES.len());
+    let inner_width = area.width.saturating_sub(2) as usize;
+    let inner_height = help_rows(body.height as usize);
+    let column = help::key_column();
+
+    let rows: Vec<RatLine> = help::ENTRIES
+        .iter()
+        .skip(state.help_top)
+        .take(inner_height)
+        .map(|entry| {
+            let text = elide_end(&help::row(entry, column), inner_width);
+            RatLine::from(RatSpan::styled(
+                text,
+                convert(ctx.theme.style(StyleRole::Normal)),
+            ))
+        })
+        .collect();
+
+    let block = Block::bordered()
+        .title("Keys")
+        .border_style(convert(ctx.theme.style(StyleRole::CodeBorder)));
+    frame.render_widget(Clear, area);
+    frame.render_widget(Paragraph::new(rows).block(block), area);
 }
 
 /// Floating heading list. Drawn over the document so the reader keeps their
@@ -117,6 +148,14 @@ fn outline_window(selected: usize, total: usize, height: usize) -> std::ops::Ran
     let top = selected.saturating_sub(height.saturating_sub(1));
     let top = top.min(total.saturating_sub(height));
     top..(top + height).min(total)
+}
+
+/// How many help entries the overlay shows at once. The key map needs the same
+/// number to bound scrolling, so both sides call this.
+pub fn help_rows(body_height: usize) -> usize {
+    let body_height = u16::try_from(body_height).unwrap_or(u16::MAX);
+    let height = (help::ENTRIES.len() as u16 + 2).min(body_height.saturating_sub(2).max(3));
+    height.saturating_sub(2) as usize
 }
 
 fn overlay_area(body: Rect, items: usize) -> Rect {
@@ -451,6 +490,30 @@ mod tests {
         assert!(open.contains("Title"), "{open}");
         // Nested headings are indented under their parent.
         assert!(open.contains("  Section"), "{open}");
+    }
+
+    #[test]
+    fn the_help_overlay_lists_the_bindings() {
+        let lines: Vec<RenderedLine> = (0..40).map(|i| line(&format!("body {i}"))).collect();
+        let mut state = PagerState::new(lines.len(), 20, 11, 60);
+
+        state.apply(crate::pager::state::Action::ToggleHelp);
+        let open = screen(&state, &lines).join("\n");
+        assert!(open.contains("Keys"), "{open}");
+        assert!(open.contains("Half screen down / up"), "{open}");
+
+        // A terminal too short for the whole list still reaches its end.
+        assert!(!open.contains("Quit"), "{open}");
+        state.scroll_help(
+            help::ENTRIES.len() as isize,
+            help::ENTRIES.len(),
+            help_rows(state.height),
+        );
+        let scrolled = screen(&state, &lines).join("\n");
+        assert!(scrolled.contains("Quit"), "{scrolled}");
+
+        state.apply(crate::pager::state::Action::ToggleHelp);
+        assert!(!screen(&state, &lines).join("\n").contains("Keys"));
     }
 
     /// The pager cannot make anything clickable, but it marks the same runs the

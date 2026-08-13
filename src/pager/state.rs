@@ -23,6 +23,7 @@ pub enum Action {
     NextMatch,
     PreviousMatch,
     ToggleOutline,
+    ToggleHelp,
     Quit,
 }
 
@@ -31,6 +32,7 @@ pub enum Mode {
     Normal,
     Search,
     Outline,
+    Help,
 }
 
 /// One heading in the outline overlay.
@@ -91,6 +93,9 @@ pub struct PagerState {
     /// Rendered line opened by `--line`, highlighted until the reader moves.
     pub initial_line: Option<usize>,
     pub outline: Outline,
+    /// First help entry on screen. A terminal too short for the whole list must
+    /// still be able to reach the last line of it.
+    pub help_top: usize,
 }
 
 impl PagerState {
@@ -108,6 +113,7 @@ impl PagerState {
             status: None,
             initial_line: None,
             outline: Outline::default(),
+            help_top: 0,
         }
     }
 
@@ -137,7 +143,7 @@ impl PagerState {
         // Any deliberate movement retires the `--line` highlight.
         if !matches!(
             action,
-            Action::Quit | Action::StartSearch | Action::ToggleOutline
+            Action::Quit | Action::StartSearch | Action::ToggleOutline | Action::ToggleHelp
         ) {
             self.initial_line = None;
         }
@@ -145,6 +151,7 @@ impl PagerState {
         match action {
             Action::Quit => return false,
             Action::ToggleOutline => self.toggle_outline(),
+            Action::ToggleHelp => self.toggle_help(),
             Action::LineDown => self.scroll_down(1),
             Action::LineUp => self.scroll_up(1),
             Action::HalfPageDown => self.scroll_down(self.height.div_ceil(2)),
@@ -225,6 +232,26 @@ impl PagerState {
         }
         self.outline.select_for_line(self.top);
         self.mode = Mode::Outline;
+    }
+
+    fn toggle_help(&mut self) {
+        self.mode = match self.mode {
+            Mode::Help => Mode::Normal,
+            _ => {
+                self.help_top = 0;
+                Mode::Help
+            }
+        };
+    }
+
+    /// Scroll the key list. `visible` is how many entries fit in the overlay.
+    pub fn scroll_help(&mut self, delta: isize, total: usize, visible: usize) {
+        let last = total.saturating_sub(visible);
+        self.help_top = self.help_top.saturating_add_signed(delta).min(last);
+    }
+
+    pub fn close_help(&mut self) {
+        self.mode = Mode::Normal;
     }
 
     pub fn move_outline(&mut self, delta: isize) {
@@ -527,6 +554,32 @@ mod tests {
         // Losing every heading must not leave the overlay open.
         s.set_outline(Vec::new());
         assert_eq!(s.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn the_help_overlay_toggles_and_scrolls_within_its_list() {
+        let mut s = state();
+        s.apply(Action::ToggleHelp);
+        assert_eq!(s.mode, Mode::Help);
+        s.scroll_help(-1, 15, 8);
+        assert_eq!(s.help_top, 0);
+        s.scroll_help(20, 15, 8);
+        assert_eq!(s.help_top, 7);
+        s.apply(Action::ToggleHelp);
+        assert_eq!(s.mode, Mode::Normal);
+        // Reopening starts from the top of the list.
+        s.apply(Action::ToggleHelp);
+        assert_eq!(s.help_top, 0);
+    }
+
+    #[test]
+    fn opening_the_help_does_not_move_the_document() {
+        let mut s = state();
+        s.top = 30;
+        s.initial_line = Some(30);
+        s.apply(Action::ToggleHelp);
+        assert_eq!(s.top, 30);
+        assert_eq!(s.initial_line, Some(30));
     }
 
     #[test]

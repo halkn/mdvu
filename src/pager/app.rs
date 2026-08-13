@@ -19,9 +19,10 @@ use crate::layout::{LayoutOptions, RenderedDocument, layout_document};
 use crate::markdown::model::{Document, headings};
 use crate::pager::TerminalGuard;
 use crate::pager::event::{Input, map};
+use crate::pager::help;
 use crate::pager::images::{self, Placed};
 use crate::pager::state::{OutlineItem, PagerState, rendered_line_for_source, source_line_at};
-use crate::pager::view::{ViewContext, draw, widest_line};
+use crate::pager::view::{ViewContext, draw, help_rows, widest_line};
 use crate::pager::watch::Watch;
 use crate::source::SourceText;
 
@@ -248,6 +249,10 @@ fn handle_key(state: &mut PagerState, key: event::KeyEvent, texts: &[String]) ->
         Input::OutlineMove(delta) => state.move_outline(delta),
         Input::OutlineConfirm => state.confirm_outline(),
         Input::OutlineCancel => state.cancel_outline(),
+        Input::HelpScroll(delta) => {
+            state.scroll_help(delta, help::ENTRIES.len(), help_rows(state.height))
+        }
+        Input::HelpClose => state.close_help(),
         Input::Ignored => {}
     }
     true
