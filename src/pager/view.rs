@@ -259,8 +259,13 @@ fn status_bar<'a>(
     if state.mode == Mode::Search {
         let mut spans = prompt_spans(state, style);
         if !state.input.is_empty() {
+            // The tally sits where it will sit once the search is confirmed, so
+            // confirming does not make it jump across the bar.
+            let tally = tally(state.visible_search());
+            let used: usize = spans.iter().map(|s| display_width(&s.content)).sum();
+            let gap = width.saturating_sub(used + display_width(&tally)).max(2);
             spans.push(RatSpan::styled(
-                format!("  {}", tally(state.visible_search())),
+                format!("{}{tally}", " ".repeat(gap)),
                 style,
             ));
         }
@@ -531,8 +536,11 @@ mod tests {
         for c in "needle".chars() {
             state.insert_search_char(c, &texts);
         }
-        // While typing, the prompt carries the count of what is typed so far.
-        assert!(screen(&state, &lines).join("\n").contains("(1/3)"));
+        // While typing, the prompt carries the count of what is typed so far,
+        // at the same edge it will keep once the search is confirmed.
+        let typing = screen(&state, &lines).pop().expect("a status bar");
+        assert!(typing.starts_with("/needle"), "{typing}");
+        assert!(typing.ends_with("(1/3)"), "{typing}");
 
         state.confirm_search(&texts);
         state.apply(crate::pager::state::Action::NextMatch);
