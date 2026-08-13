@@ -3,6 +3,8 @@
 //! The rendered document is owned by the app, not by this state, so scrolling
 //! and searching never clone the surface.
 
+use unicode_segmentation::UnicodeSegmentation;
+
 use crate::layout::RenderedLine;
 use crate::pager::search::Search;
 
@@ -23,7 +25,23 @@ pub enum Action {
     NextMatch,
     PreviousMatch,
     ToggleOutline,
+    ToggleHelp,
     Quit,
+}
+
+/// An edit to the search prompt. The bindings match the readline keys a shell
+/// already gives the reader.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchEdit {
+    Backspace,
+    Delete,
+    DeleteWordBefore,
+    KillToStart,
+    KillToEnd,
+    CaretLeft,
+    CaretRight,
+    CaretStart,
+    CaretEnd,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,6 +49,7 @@ pub enum Mode {
     Normal,
     Search,
     Outline,
+    Help,
 }
 
 /// One heading in the outline overlay.
@@ -86,11 +105,22 @@ pub struct PagerState {
     pub widest: usize,
     pub mode: Mode,
     pub input: String,
+    /// Byte offset of the caret in `input`, always on a grapheme boundary.
+    pub caret: usize,
     pub search: Search,
+    /// Matches for the query being typed. Kept apart from `search` so that
+    /// cancelling the prompt leaves the confirmed search untouched.
+    preview: Search,
+    /// Viewport when the prompt opened, so an incremental search starts from
+    /// the reader's place and cancelling returns them to it.
+    search_origin: Option<(usize, usize)>,
     pub status: Option<String>,
     /// Rendered line opened by `--line`, highlighted until the reader moves.
     pub initial_line: Option<usize>,
     pub outline: Outline,
+    /// First help entry on screen. A terminal too short for the whole list must
+    /// still be able to reach the last line of it.
+    pub help_top: usize,
 }
 
 impl PagerState {
@@ -104,10 +134,14 @@ impl PagerState {
             widest,
             mode: Mode::Normal,
             input: String::new(),
+            caret: 0,
             search: Search::default(),
+            preview: Search::default(),
+            search_origin: None,
             status: None,
             initial_line: None,
             outline: Outline::default(),
+            help_top: 0,
         }
     }
 
@@ -137,7 +171,7 @@ impl PagerState {
         // Any deliberate movement retires the `--line` highlight.
         if !matches!(
             action,
-            Action::Quit | Action::StartSearch | Action::ToggleOutline
+            Action::Quit | Action::StartSearch | Action::ToggleOutline | Action::ToggleHelp
         ) {
             self.initial_line = None;
         }
@@ -145,6 +179,7 @@ impl PagerState {
         match action {
             Action::Quit => return false,
             Action::ToggleOutline => self.toggle_outline(),
+            Action::ToggleHelp => self.toggle_help(),
             Action::LineDown => self.scroll_down(1),
             Action::LineUp => self.scroll_up(1),
             Action::HalfPageDown => self.scroll_down(self.height.div_ceil(2)),
@@ -161,6 +196,9 @@ impl PagerState {
             Action::StartSearch => {
                 self.mode = Mode::Search;
                 self.input.clear();
+                self.caret = 0;
+                self.preview = Search::default();
+                self.search_origin = Some((self.top, self.left));
             }
             Action::NextMatch => self.jump(true),
             Action::PreviousMatch => self.jump(false),
@@ -180,21 +218,147 @@ impl PagerState {
         if !self.search.is_active() {
             return;
         }
+        let before = self.search.position();
         let found = if forward {
             self.search.next()
         } else {
             self.search.previous()
         };
         match found {
-            Some(m) => self.reveal(m.line),
+            Some(m) => {
+                self.reveal(m.line);
+                // Cycling past either end is easy to mistake for "no more
+                // matches", so say that it happened.
+                if let (Some(before), Some(after)) = (before, self.search.position())
+                    && self.search.count() > 1
+                    && (forward && after <= before || !forward && after >= before)
+                {
+                    self.status = Some("wrapped".to_string());
+                }
+            }
             None => self.status = Some(format!("no match: {}", self.search.query())),
         }
+    }
+
+    /// Matches to highlight: the query being typed while the prompt is open,
+    /// the confirmed one otherwise.
+    pub fn visible_search(&self) -> &Search {
+        match self.mode {
+            Mode::Search => &self.preview,
+            _ => &self.search,
+        }
+    }
+
+    #[cfg(test)]
+    pub fn preview_search(&self) -> &Search {
+        &self.preview
+    }
+
+    pub fn insert_search_char(&mut self, c: char, lines: &[String]) {
+        self.input.insert(self.caret, c);
+        self.caret += c.len_utf8();
+        self.update_preview(lines);
+    }
+
+    /// Apply one prompt edit. Caret movement never re-runs the query; only a
+    /// change to the text does.
+    pub fn edit_search(&mut self, edit: SearchEdit, lines: &[String]) {
+        match edit {
+            SearchEdit::CaretLeft => self.caret = self.previous_boundary(),
+            SearchEdit::CaretRight => self.caret = self.next_boundary(),
+            SearchEdit::CaretStart => self.caret = 0,
+            SearchEdit::CaretEnd => self.caret = self.input.len(),
+            SearchEdit::Backspace => {
+                let from = self.previous_boundary();
+                self.input.replace_range(from..self.caret, "");
+                self.caret = from;
+                self.update_preview(lines);
+            }
+            SearchEdit::Delete => {
+                let to = self.next_boundary();
+                self.input.replace_range(self.caret..to, "");
+                self.update_preview(lines);
+            }
+            SearchEdit::DeleteWordBefore => {
+                let from = self.word_start();
+                self.input.replace_range(from..self.caret, "");
+                self.caret = from;
+                self.update_preview(lines);
+            }
+            SearchEdit::KillToStart => {
+                self.input.replace_range(..self.caret, "");
+                self.caret = 0;
+                self.update_preview(lines);
+            }
+            SearchEdit::KillToEnd => {
+                self.input.truncate(self.caret);
+                self.update_preview(lines);
+            }
+        }
+    }
+
+    /// Byte offset one grapheme before the caret, so a wide character or a
+    /// combining sequence is never cut in half.
+    fn previous_boundary(&self) -> usize {
+        self.input[..self.caret]
+            .grapheme_indices(true)
+            .next_back()
+            .map_or(0, |(at, _)| at)
+    }
+
+    fn next_boundary(&self) -> usize {
+        self.input[self.caret..]
+            .graphemes(true)
+            .next()
+            .map_or(self.caret, |g| self.caret + g.len())
+    }
+
+    /// Start of the word before the caret: the trailing spaces, then the run
+    /// that precedes them.
+    fn word_start(&self) -> usize {
+        let head = &self.input[..self.caret];
+        let trimmed = head.trim_end();
+        match trimmed.rfind(char::is_whitespace) {
+            Some(at) => at + head[at..].chars().next().map_or(1, char::len_utf8),
+            None => 0,
+        }
+    }
+
+    /// Re-run the pending query and show where it lands, without waiting for
+    /// Enter. The search always restarts from where the prompt opened, so
+    /// adding a character cannot walk the viewport down the document.
+    fn update_preview(&mut self, lines: &[String]) {
+        let top = self.restore_origin();
+        self.status = None;
+        self.preview.replace_query(&self.input, lines);
+        if !self.preview.is_active() {
+            return;
+        }
+        self.preview.select_from(top);
+        if let Some(m) = self.preview.current() {
+            self.initial_line = None;
+            self.reveal(m.line);
+        }
+    }
+
+    /// Re-run both searches after a re-layout. Rendered line numbers and byte
+    /// offsets change with the width, and the prompt's own matches have to
+    /// follow too, or the highlights drawn while it is open belong to the
+    /// previous layout. Re-selecting from the viewport keeps the current match
+    /// where the reader is instead of sending it back to the first one.
+    pub fn recompute_searches(&mut self, lines: &[String]) {
+        self.search.recompute(lines);
+        self.search.select_from(self.top);
+        self.preview.recompute(lines);
+        self.preview.select_from(self.top);
     }
 
     /// Confirm the search prompt. Keeps the viewport still when nothing matches.
     pub fn confirm_search(&mut self, lines: &[String]) {
         let query = std::mem::take(&mut self.input);
         self.mode = Mode::Normal;
+        self.preview = Search::default();
+        self.search_origin = None;
         self.search.set_query(&query, lines);
         if !self.search.is_active() {
             return;
@@ -209,9 +373,27 @@ impl PagerState {
         }
     }
 
+    /// Abandon the prompt: the confirmed search and the reading position are
+    /// both as they were before `/` was pressed.
     pub fn cancel_search(&mut self) {
         self.mode = Mode::Normal;
         self.input.clear();
+        self.caret = 0;
+        self.preview = Search::default();
+        self.restore_origin();
+        self.search_origin = None;
+    }
+
+    /// Put the viewport back where the prompt opened. The surface can have been
+    /// laid out again since then — a resize, or a `--watch` reload of a shorter
+    /// file — so the remembered offsets are clamped into the current bounds
+    /// rather than trusted.
+    fn restore_origin(&mut self) -> usize {
+        if let Some((top, left)) = self.search_origin {
+            self.top = top.min(self.max_top());
+            self.left = left.min(self.max_left());
+        }
+        self.top
     }
 
     fn toggle_outline(&mut self) {
@@ -225,6 +407,26 @@ impl PagerState {
         }
         self.outline.select_for_line(self.top);
         self.mode = Mode::Outline;
+    }
+
+    fn toggle_help(&mut self) {
+        self.mode = match self.mode {
+            Mode::Help => Mode::Normal,
+            _ => {
+                self.help_top = 0;
+                Mode::Help
+            }
+        };
+    }
+
+    /// Scroll the key list. `visible` is how many entries fit in the overlay.
+    pub fn scroll_help(&mut self, delta: isize, total: usize, visible: usize) {
+        let last = total.saturating_sub(visible);
+        self.help_top = self.help_top.saturating_add_signed(delta).min(last);
+    }
+
+    pub fn close_help(&mut self) {
+        self.mode = Mode::Normal;
     }
 
     pub fn move_outline(&mut self, delta: isize) {
@@ -424,6 +626,202 @@ mod tests {
         assert!(s.status.as_deref().unwrap().contains("no match"));
     }
 
+    fn haystack() -> Vec<String> {
+        (0..100)
+            .map(|i| match i {
+                20 | 42 | 80 => "needle".to_string(),
+                _ => "x".to_string(),
+            })
+            .collect()
+    }
+
+    /// Typing moves the viewport as the query grows, without waiting for Enter.
+    #[test]
+    fn typing_previews_the_first_match_from_where_the_search_started() {
+        let lines = haystack();
+        let mut s = state();
+        s.top = 30;
+        s.apply(Action::StartSearch);
+        for c in "needle".chars() {
+            s.insert_search_char(c, &lines);
+        }
+        assert_eq!(s.mode, Mode::Search);
+        assert!(s.top <= 42 && 42 < s.top + s.height, "top={}", s.top);
+        assert_eq!(s.preview_search().count(), 3);
+
+        // Deleting back to nothing puts the reader where they started.
+        for _ in 0.."needle".len() {
+            s.edit_search(SearchEdit::Backspace, &lines);
+        }
+        assert_eq!(s.top, 30);
+        assert_eq!(s.preview_search().count(), 0);
+    }
+
+    #[test]
+    fn a_query_with_no_match_leaves_the_viewport_alone() {
+        let lines = haystack();
+        let mut s = state();
+        s.top = 30;
+        s.apply(Action::StartSearch);
+        for c in "absent".chars() {
+            s.insert_search_char(c, &lines);
+        }
+        assert_eq!(s.top, 30);
+        assert_eq!(s.preview_search().count(), 0);
+    }
+
+    #[test]
+    fn cancelling_a_search_returns_to_where_it_started() {
+        let lines = haystack();
+        let mut s = state();
+        s.top = 30;
+        s.left = 8;
+        s.apply(Action::StartSearch);
+        for c in "needle".chars() {
+            s.insert_search_char(c, &lines);
+        }
+        s.cancel_search();
+        assert_eq!(s.mode, Mode::Normal);
+        assert_eq!((s.top, s.left), (30, 8));
+        assert!(!s.search.is_active());
+    }
+
+    #[test]
+    fn confirming_keeps_the_previewed_match() {
+        let lines = haystack();
+        let mut s = state();
+        s.top = 30;
+        s.apply(Action::StartSearch);
+        for c in "needle".chars() {
+            s.insert_search_char(c, &lines);
+        }
+        let previewed = s.top;
+        s.confirm_search(&lines);
+        assert_eq!(s.mode, Mode::Normal);
+        assert_eq!(s.top, previewed);
+        assert_eq!(s.search.current().unwrap().line, 42);
+        assert_eq!(s.preview_search().count(), 0);
+    }
+
+    fn typed(text: &str, lines: &[String]) -> PagerState {
+        let mut s = state();
+        s.apply(Action::StartSearch);
+        for c in text.chars() {
+            s.insert_search_char(c, lines);
+        }
+        s
+    }
+
+    #[test]
+    fn the_caret_edits_the_prompt_the_way_a_shell_does() {
+        let lines = haystack();
+        let mut s = typed("needle here", &lines);
+
+        s.edit_search(SearchEdit::DeleteWordBefore, &lines);
+        assert_eq!(s.input, "needle ");
+        s.edit_search(SearchEdit::CaretStart, &lines);
+        assert_eq!(s.caret, 0);
+        s.insert_search_char('a', &lines);
+        assert_eq!((s.input.as_str(), s.caret), ("aneedle ", 1));
+        s.edit_search(SearchEdit::Delete, &lines);
+        assert_eq!(s.input, "aeedle ");
+        s.edit_search(SearchEdit::CaretEnd, &lines);
+        s.edit_search(SearchEdit::KillToStart, &lines);
+        assert_eq!((s.input.as_str(), s.caret), ("", 0));
+    }
+
+    #[test]
+    fn caret_movement_respects_grapheme_boundaries() {
+        let lines = haystack();
+        let mut s = typed("日本語", &lines);
+        assert_eq!(s.caret, 9);
+        s.edit_search(SearchEdit::CaretLeft, &lines);
+        assert_eq!(s.caret, 6);
+        s.edit_search(SearchEdit::Backspace, &lines);
+        assert_eq!((s.input.as_str(), s.caret), ("日語", 3));
+        s.edit_search(SearchEdit::CaretRight, &lines);
+        s.edit_search(SearchEdit::CaretRight, &lines);
+        assert_eq!(s.caret, s.input.len());
+        // Moving past either end stays on a boundary.
+        s.edit_search(SearchEdit::CaretRight, &lines);
+        assert_eq!(s.caret, s.input.len());
+        s.edit_search(SearchEdit::CaretStart, &lines);
+        s.edit_search(SearchEdit::CaretLeft, &lines);
+        assert_eq!(s.caret, 0);
+    }
+
+    #[test]
+    fn killing_to_the_end_keeps_what_is_before_the_caret() {
+        let lines = haystack();
+        let mut s = typed("needlex", &lines);
+        s.edit_search(SearchEdit::CaretLeft, &lines);
+        s.edit_search(SearchEdit::KillToEnd, &lines);
+        assert_eq!(s.input, "needle");
+        // The preview follows every edit, not just insertions.
+        assert_eq!(s.preview_search().count(), 3);
+    }
+
+    /// A resize or a `--watch` reload can shrink the surface while the prompt
+    /// is open. The remembered position must not put the viewport past the end.
+    #[test]
+    fn a_shorter_document_does_not_strand_the_restored_viewport() {
+        let lines = haystack();
+        let mut s = typed("needle", &lines);
+        assert_eq!(s.search_origin, Some((0, 0)));
+        s.top = 90;
+        s.search_origin = Some((90, 40));
+
+        let short: Vec<String> = lines[..30].to_vec();
+        s.resize(short.len(), 10, 10, 40);
+        s.insert_search_char('x', &short);
+        assert!(s.top <= s.max_top(), "top={} max={}", s.top, s.max_top());
+
+        s.cancel_search();
+        assert!(s.top <= s.max_top(), "top={} max={}", s.top, s.max_top());
+        assert!(s.left <= s.max_left());
+    }
+
+    #[test]
+    fn a_relayout_keeps_the_current_match_near_the_reader() {
+        let lines = haystack();
+        let mut s = typed("needle", &lines);
+        s.confirm_search(&lines);
+        s.apply(Action::NextMatch);
+        s.apply(Action::NextMatch);
+        assert_eq!(s.search.current().unwrap().line, 80);
+
+        // Same surface, laid out again: the highlight stays where the reader
+        // is instead of going back to the first match.
+        s.recompute_searches(&lines);
+        assert_eq!(s.search.current().unwrap().line, 80);
+    }
+
+    #[test]
+    fn a_relayout_also_re_runs_the_query_being_typed() {
+        let lines = haystack();
+        let mut s = typed("needle", &lines);
+        let widened: Vec<String> = lines.iter().map(|l| format!("{l} {l}")).collect::<Vec<_>>();
+        s.recompute_searches(&widened);
+        // Two occurrences per line now, and the prompt's matches follow.
+        assert_eq!(s.preview_search().count(), 6);
+    }
+
+    #[test]
+    fn cycling_past_the_last_match_says_it_wrapped() {
+        let lines = haystack();
+        let mut s = typed("needle", &lines);
+        s.confirm_search(&lines);
+        s.apply(Action::NextMatch);
+        assert_eq!(s.status, None);
+        s.apply(Action::NextMatch);
+        assert_eq!(s.status, None);
+        // Fourth match of three: back to the first.
+        s.apply(Action::NextMatch);
+        assert_eq!(s.status.as_deref(), Some("wrapped"));
+        s.apply(Action::PreviousMatch);
+        assert_eq!(s.status.as_deref(), Some("wrapped"));
+    }
+
     #[test]
     fn cancelling_a_search_returns_to_normal_mode() {
         let mut s = state();
@@ -527,6 +925,32 @@ mod tests {
         // Losing every heading must not leave the overlay open.
         s.set_outline(Vec::new());
         assert_eq!(s.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn the_help_overlay_toggles_and_scrolls_within_its_list() {
+        let mut s = state();
+        s.apply(Action::ToggleHelp);
+        assert_eq!(s.mode, Mode::Help);
+        s.scroll_help(-1, 15, 8);
+        assert_eq!(s.help_top, 0);
+        s.scroll_help(20, 15, 8);
+        assert_eq!(s.help_top, 7);
+        s.apply(Action::ToggleHelp);
+        assert_eq!(s.mode, Mode::Normal);
+        // Reopening starts from the top of the list.
+        s.apply(Action::ToggleHelp);
+        assert_eq!(s.help_top, 0);
+    }
+
+    #[test]
+    fn opening_the_help_does_not_move_the_document() {
+        let mut s = state();
+        s.top = 30;
+        s.initial_line = Some(30);
+        s.apply(Action::ToggleHelp);
+        assert_eq!(s.top, 30);
+        assert_eq!(s.initial_line, Some(30));
     }
 
     #[test]

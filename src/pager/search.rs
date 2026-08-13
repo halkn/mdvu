@@ -3,6 +3,8 @@
 //! Matching runs against what is on screen rather than the Markdown source, so
 //! a query finds what the reader can actually see.
 
+use std::borrow::Cow;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Match {
     pub line: usize,
@@ -54,17 +56,42 @@ impl Search {
         self.recompute(lines);
     }
 
-    /// Re-run the search, keeping the cursor near where it was. Called after a
-    /// re-layout, since rendered line numbers change with width.
+    /// Apply a query as typed, including an empty one. Used by the prompt while
+    /// it is being edited, where deleting the last character has to clear the
+    /// matches rather than fall back to the previous query.
+    pub fn replace_query(&mut self, query: &str, lines: &[String]) {
+        self.query = query.to_string();
+        self.recompute(lines);
+    }
+
+    /// Zero-based position of the current match, for the status bar.
+    pub fn position(&self) -> Option<usize> {
+        self.current
+    }
+
+    /// Re-run the search. Called after a re-layout, since rendered line numbers
+    /// change with width. The cursor lands on the first match; callers that
+    /// want it near the reader follow with `select_from`.
     pub fn recompute(&mut self, lines: &[String]) {
         self.matches.clear();
         if self.query.is_empty() {
             self.current = None;
             return;
         }
-        let needle = self.query.to_lowercase();
+        // Smart case, as in moar and vim: a query typed in lower case matches
+        // any case, and adding a capital asks for that capital.
+        let fold = !self.query.chars().any(char::is_uppercase);
+        let needle = if fold {
+            self.query.to_lowercase()
+        } else {
+            self.query.clone()
+        };
         for (index, line) in lines.iter().enumerate() {
-            let haystack = line.to_lowercase();
+            let haystack: Cow<'_, str> = if fold {
+                Cow::Owned(line.to_lowercase())
+            } else {
+                Cow::Borrowed(line.as_str())
+            };
             // Lowercasing can change byte length, so offsets are only used when
             // the mapping is one to one; otherwise the whole line highlights.
             let same_layout = haystack.len() == line.len();
@@ -146,11 +173,23 @@ mod tests {
     }
 
     #[test]
-    fn matching_is_case_insensitive() {
+    fn a_lower_case_query_matches_any_case() {
         let mut s = Search::default();
-        s.set_query("THE", &lines());
+        s.set_query("the", &lines());
         assert_eq!(s.count(), 3);
         assert_eq!(s.matches()[0].line, 0);
+    }
+
+    #[test]
+    fn a_capital_in_the_query_asks_for_that_capital() {
+        let lines = vec!["The quick".to_string(), "the lazy".to_string()];
+        let mut s = Search::default();
+        s.set_query("The", &lines);
+        assert_eq!(s.count(), 1);
+        assert_eq!(s.matches()[0].line, 0);
+        // Offsets still locate the match when the query is not folded.
+        let m = s.matches()[0];
+        assert_eq!(&lines[m.line][m.start..m.end], "The");
     }
 
     #[test]

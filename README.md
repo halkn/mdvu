@@ -161,13 +161,30 @@ reading stdin.
 | `G`, `End` | End of the document |
 | `h`, `Left` / `l`, `Right` | Scroll horizontally |
 | `0` | Reset horizontal scroll |
-| `/` | Search, `Enter` to confirm, `Esc` to cancel |
+| `/` | Search as you type, `Enter` to confirm, `Esc` to cancel |
 | `n` / `N` | Next / previous match |
 | `t` | Heading list, `j` / `k` to select, `Enter` to jump, `Esc` to close |
+| `?` | Key list, `j` / `k` to scroll, `Esc` to close |
 | `q`, `Esc` | Quit |
 
-Search runs over the rendered text, is case-insensitive, highlights every match
-on screen and cycles with `n` and `N`. An empty query keeps the previous one.
+Search runs over the rendered text, highlights every match on screen and cycles
+with `n` and `N`, saying `wrapped` when it passes either end. The match being
+visited is coloured, the rest are plain reversed, so which one the viewport
+moved to is visible without counting. The status bar
+shows which match is current, as `(3/12)`. An empty query keeps the previous
+one. Case follows the query: a query in lower case matches any case, and one
+capital makes the whole query case-sensitive.
+
+The document follows the query as it is typed: every keystroke jumps to the
+first match at or after where `/` was pressed, so a query can be judged before
+confirming it. `Esc` puts back both the previous search and the reading
+position; `Enter` keeps what is on screen. The prompt takes the readline keys —
+`Ctrl-a` / `Ctrl-e`, `Ctrl-b` / `Ctrl-f`, arrows and `Home` / `End` to move,
+`Ctrl-w`, `Ctrl-u`, `Ctrl-k`, `Ctrl-d` and `Backspace` to delete.
+
+`?` opens the same key list inside the pager, so the bindings are readable
+without leaving the document. The list in `src/pager/help.rs` is the source of
+truth for it and for the table above.
 
 `t` opens a list of the document's headings, preselecting the section on screen.
 It works in both flavors and is independent of `[[_TOC_]]`.

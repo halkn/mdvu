@@ -19,9 +19,10 @@ use crate::layout::{LayoutOptions, RenderedDocument, layout_document};
 use crate::markdown::model::{Document, headings};
 use crate::pager::TerminalGuard;
 use crate::pager::event::{Input, map};
+use crate::pager::help;
 use crate::pager::images::{self, Placed};
 use crate::pager::state::{OutlineItem, PagerState, rendered_line_for_source, source_line_at};
-use crate::pager::view::{ViewContext, draw, widest_line};
+use crate::pager::view::{ViewContext, draw, help_rows, widest_line};
 use crate::pager::watch::Watch;
 use crate::source::SourceText;
 
@@ -196,7 +197,6 @@ fn event_loop(input: PagerInput) -> Result<()> {
                     rows.saturating_sub(1) as usize,
                     columns as usize,
                 );
-                state.search.recompute(&texts);
                 state.set_outline(outline(&document, &rendered));
                 state.initial_line = None;
                 if let Some(line) = anchor
@@ -204,6 +204,9 @@ fn event_loop(input: PagerInput) -> Result<()> {
                 {
                     state.top = index.min(state.max_top());
                 }
+                // After the viewport is back where it was, so the current match
+                // is chosen from the reader's place in the new layout.
+                state.recompute_searches(&texts);
             }
             _ => {}
         }
@@ -225,7 +228,6 @@ fn restore(
         state.height,
         state.width,
     );
-    state.search.recompute(texts);
     state.set_outline(outline(document, rendered));
     state.initial_line = None;
     if let Some(line) = anchor
@@ -233,21 +235,24 @@ fn restore(
     {
         state.top = index.min(state.max_top());
     }
+    state.recompute_searches(texts);
 }
 
 /// Returns `false` when the pager should exit.
 fn handle_key(state: &mut PagerState, key: event::KeyEvent, texts: &[String]) -> bool {
     match map(key, state.mode) {
         Input::Navigate(action) => return state.apply(action),
-        Input::SearchChar(c) => state.input.push(c),
-        Input::SearchBackspace => {
-            state.input.pop();
-        }
+        Input::SearchChar(c) => state.insert_search_char(c, texts),
+        Input::SearchEdit(edit) => state.edit_search(edit, texts),
         Input::SearchConfirm => state.confirm_search(texts),
         Input::SearchCancel => state.cancel_search(),
         Input::OutlineMove(delta) => state.move_outline(delta),
         Input::OutlineConfirm => state.confirm_outline(),
         Input::OutlineCancel => state.cancel_outline(),
+        Input::HelpScroll(delta) => {
+            state.scroll_help(delta, help::ENTRIES.len(), help_rows(state.height))
+        }
+        Input::HelpClose => state.close_help(),
         Input::Ignored => {}
     }
     true

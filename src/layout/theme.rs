@@ -176,6 +176,11 @@ impl Theme {
             StyleRole::Warning => Style::fg(Color::Yellow),
             StyleRole::Error => Style::fg(Color::Red),
             StyleRole::SearchMatch => Style::plain().reverse(),
+            // Reversed as well, so a match reads the same way wherever it is,
+            // but on magenta: the plain reverse is the terminal's own
+            // foreground, and yellow sits too close to it to be told apart at a
+            // glance.
+            StyleRole::CurrentMatch => Style::fg(Color::Magenta).reverse().bold(),
             StyleRole::InitialLine => Style::fg(Color::Yellow).dim(),
             StyleRole::Status => Style::plain().reverse(),
             StyleRole::Syntax(kind) => self.syntax(kind),
