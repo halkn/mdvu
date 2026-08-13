@@ -257,10 +257,7 @@ fn status_bar<'a>(
 ) -> Paragraph<'a> {
     let style = convert(ctx.theme.style(StyleRole::Status));
     if state.mode == Mode::Search {
-        return Paragraph::new(RatLine::from(RatSpan::styled(
-            format!("/{}", state.input),
-            style,
-        )));
+        return Paragraph::new(RatLine::from(prompt_spans(state, style)));
     }
 
     let mut right = format!(
@@ -292,6 +289,21 @@ fn status_bar<'a>(
         format!("{title}{}{right}", " ".repeat(gap.max(1))),
         style,
     )))
+}
+
+/// The prompt with its caret. `TerminalGuard` owns cursor visibility and keeps
+/// it hidden, so the caret is a reversed cell rather than the terminal cursor.
+fn prompt_spans<'a>(state: &PagerState, style: RatStyle) -> Vec<RatSpan<'a>> {
+    let caret = state.caret.min(state.input.len());
+    let (under, after) = match state.input[caret..].graphemes(true).next() {
+        Some(grapheme) => (grapheme.to_string(), &state.input[caret + grapheme.len()..]),
+        None => (" ".to_string(), ""),
+    };
+    vec![
+        RatSpan::styled(format!("/{}", &state.input[..caret]), style),
+        RatSpan::styled(under, style.add_modifier(Modifier::REVERSED)),
+        RatSpan::styled(after.to_string(), style),
+    ]
 }
 
 /// Drop leading path components so the file name stays visible.

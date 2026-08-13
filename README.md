@@ -161,7 +161,7 @@ reading stdin.
 | `G`, `End` | End of the document |
 | `h`, `Left` / `l`, `Right` | Scroll horizontally |
 | `0` | Reset horizontal scroll |
-| `/` | Search, `Enter` to confirm, `Esc` to cancel |
+| `/` | Search as you type, `Enter` to confirm, `Esc` to cancel |
 | `n` / `N` | Next / previous match |
 | `t` | Heading list, `j` / `k` to select, `Enter` to jump, `Esc` to close |
 | `?` | Key list, `j` / `k` to scroll, `Esc` to close |
@@ -169,6 +169,13 @@ reading stdin.
 
 Search runs over the rendered text, is case-insensitive, highlights every match
 on screen and cycles with `n` and `N`. An empty query keeps the previous one.
+
+The document follows the query as it is typed: every keystroke jumps to the
+first match at or after where `/` was pressed, so a query can be judged before
+confirming it. `Esc` puts back both the previous search and the reading
+position; `Enter` keeps what is on screen. The prompt takes the readline keys —
+`Ctrl-a` / `Ctrl-e`, `Ctrl-b` / `Ctrl-f`, arrows and `Home` / `End` to move,
+`Ctrl-w`, `Ctrl-u`, `Ctrl-k`, `Ctrl-d` and `Backspace` to delete.
 
 `?` opens the same key list inside the pager, so the bindings are readable
 without leaving the document. The list in `src/pager/help.rs` is the source of

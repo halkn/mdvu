@@ -3,6 +3,8 @@
 //! The rendered document is owned by the app, not by this state, so scrolling
 //! and searching never clone the surface.
 
+use unicode_segmentation::UnicodeSegmentation;
+
 use crate::layout::RenderedLine;
 use crate::pager::search::Search;
 
@@ -25,6 +27,21 @@ pub enum Action {
     ToggleOutline,
     ToggleHelp,
     Quit,
+}
+
+/// An edit to the search prompt. The bindings match the readline keys a shell
+/// already gives the reader.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchEdit {
+    Backspace,
+    Delete,
+    DeleteWordBefore,
+    KillToStart,
+    KillToEnd,
+    CaretLeft,
+    CaretRight,
+    CaretStart,
+    CaretEnd,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,6 +105,8 @@ pub struct PagerState {
     pub widest: usize,
     pub mode: Mode,
     pub input: String,
+    /// Byte offset of the caret in `input`, always on a grapheme boundary.
+    pub caret: usize,
     pub search: Search,
     /// Matches for the query being typed. Kept apart from `search` so that
     /// cancelling the prompt leaves the confirmed search untouched.
@@ -115,6 +134,7 @@ impl PagerState {
             widest,
             mode: Mode::Normal,
             input: String::new(),
+            caret: 0,
             search: Search::default(),
             preview: Search::default(),
             search_origin: None,
@@ -176,6 +196,7 @@ impl PagerState {
             Action::StartSearch => {
                 self.mode = Mode::Search;
                 self.input.clear();
+                self.caret = 0;
                 self.preview = Search::default();
                 self.search_origin = Some((self.top, self.left));
             }
@@ -223,13 +244,73 @@ impl PagerState {
     }
 
     pub fn insert_search_char(&mut self, c: char, lines: &[String]) {
-        self.input.push(c);
+        self.input.insert(self.caret, c);
+        self.caret += c.len_utf8();
         self.update_preview(lines);
     }
 
-    pub fn delete_search_char(&mut self, lines: &[String]) {
-        self.input.pop();
-        self.update_preview(lines);
+    /// Apply one prompt edit. Caret movement never re-runs the query; only a
+    /// change to the text does.
+    pub fn edit_search(&mut self, edit: SearchEdit, lines: &[String]) {
+        match edit {
+            SearchEdit::CaretLeft => self.caret = self.previous_boundary(),
+            SearchEdit::CaretRight => self.caret = self.next_boundary(),
+            SearchEdit::CaretStart => self.caret = 0,
+            SearchEdit::CaretEnd => self.caret = self.input.len(),
+            SearchEdit::Backspace => {
+                let from = self.previous_boundary();
+                self.input.replace_range(from..self.caret, "");
+                self.caret = from;
+                self.update_preview(lines);
+            }
+            SearchEdit::Delete => {
+                let to = self.next_boundary();
+                self.input.replace_range(self.caret..to, "");
+                self.update_preview(lines);
+            }
+            SearchEdit::DeleteWordBefore => {
+                let from = self.word_start();
+                self.input.replace_range(from..self.caret, "");
+                self.caret = from;
+                self.update_preview(lines);
+            }
+            SearchEdit::KillToStart => {
+                self.input.replace_range(..self.caret, "");
+                self.caret = 0;
+                self.update_preview(lines);
+            }
+            SearchEdit::KillToEnd => {
+                self.input.truncate(self.caret);
+                self.update_preview(lines);
+            }
+        }
+    }
+
+    /// Byte offset one grapheme before the caret, so a wide character or a
+    /// combining sequence is never cut in half.
+    fn previous_boundary(&self) -> usize {
+        self.input[..self.caret]
+            .grapheme_indices(true)
+            .next_back()
+            .map_or(0, |(at, _)| at)
+    }
+
+    fn next_boundary(&self) -> usize {
+        self.input[self.caret..]
+            .graphemes(true)
+            .next()
+            .map_or(self.caret, |g| self.caret + g.len())
+    }
+
+    /// Start of the word before the caret: the trailing spaces, then the run
+    /// that precedes them.
+    fn word_start(&self) -> usize {
+        let head = &self.input[..self.caret];
+        let trimmed = head.trim_end();
+        match trimmed.rfind(char::is_whitespace) {
+            Some(at) => at + head[at..].chars().next().map_or(1, char::len_utf8),
+            None => 0,
+        }
     }
 
     /// Re-run the pending query and show where it lands, without waiting for
@@ -276,6 +357,7 @@ impl PagerState {
     pub fn cancel_search(&mut self) {
         self.mode = Mode::Normal;
         self.input.clear();
+        self.caret = 0;
         self.preview = Search::default();
         if let Some((top, left)) = self.search_origin.take() {
             self.top = top;
@@ -538,7 +620,7 @@ mod tests {
 
         // Deleting back to nothing puts the reader where they started.
         for _ in 0.."needle".len() {
-            s.delete_search_char(&lines);
+            s.edit_search(SearchEdit::Backspace, &lines);
         }
         assert_eq!(s.top, 30);
         assert_eq!(s.preview_search().count(), 0);
@@ -588,6 +670,64 @@ mod tests {
         assert_eq!(s.top, previewed);
         assert_eq!(s.search.current().unwrap().line, 42);
         assert_eq!(s.preview_search().count(), 0);
+    }
+
+    fn typed(text: &str, lines: &[String]) -> PagerState {
+        let mut s = state();
+        s.apply(Action::StartSearch);
+        for c in text.chars() {
+            s.insert_search_char(c, lines);
+        }
+        s
+    }
+
+    #[test]
+    fn the_caret_edits_the_prompt_the_way_a_shell_does() {
+        let lines = haystack();
+        let mut s = typed("needle here", &lines);
+
+        s.edit_search(SearchEdit::DeleteWordBefore, &lines);
+        assert_eq!(s.input, "needle ");
+        s.edit_search(SearchEdit::CaretStart, &lines);
+        assert_eq!(s.caret, 0);
+        s.insert_search_char('a', &lines);
+        assert_eq!((s.input.as_str(), s.caret), ("aneedle ", 1));
+        s.edit_search(SearchEdit::Delete, &lines);
+        assert_eq!(s.input, "aeedle ");
+        s.edit_search(SearchEdit::CaretEnd, &lines);
+        s.edit_search(SearchEdit::KillToStart, &lines);
+        assert_eq!((s.input.as_str(), s.caret), ("", 0));
+    }
+
+    #[test]
+    fn caret_movement_respects_grapheme_boundaries() {
+        let lines = haystack();
+        let mut s = typed("日本語", &lines);
+        assert_eq!(s.caret, 9);
+        s.edit_search(SearchEdit::CaretLeft, &lines);
+        assert_eq!(s.caret, 6);
+        s.edit_search(SearchEdit::Backspace, &lines);
+        assert_eq!((s.input.as_str(), s.caret), ("日語", 3));
+        s.edit_search(SearchEdit::CaretRight, &lines);
+        s.edit_search(SearchEdit::CaretRight, &lines);
+        assert_eq!(s.caret, s.input.len());
+        // Moving past either end stays on a boundary.
+        s.edit_search(SearchEdit::CaretRight, &lines);
+        assert_eq!(s.caret, s.input.len());
+        s.edit_search(SearchEdit::CaretStart, &lines);
+        s.edit_search(SearchEdit::CaretLeft, &lines);
+        assert_eq!(s.caret, 0);
+    }
+
+    #[test]
+    fn killing_to_the_end_keeps_what_is_before_the_caret() {
+        let lines = haystack();
+        let mut s = typed("needlex", &lines);
+        s.edit_search(SearchEdit::CaretLeft, &lines);
+        s.edit_search(SearchEdit::KillToEnd, &lines);
+        assert_eq!(s.input, "needle");
+        // The preview follows every edit, not just insertions.
+        assert_eq!(s.preview_search().count(), 3);
     }
 
     #[test]
