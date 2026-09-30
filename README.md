@@ -4,7 +4,8 @@ A fast terminal Markdown viewer for GFM and Azure DevOps Wiki Markdown, built in
 Rust.
 
 `mdvu` renders one Markdown file — or stdin — as styled terminal text, including
-Mermaid diagrams drawn as Unicode or ASCII art. It is built for reviewing a
+Mermaid diagrams drawn as Unicode or ASCII art, or as pictures where the
+terminal can show them. It is built for reviewing a
 document a coding agent just changed, without leaving the terminal and without a
 browser, Node.js or any external command.
 
@@ -16,8 +17,8 @@ browser, Node.js or any external command.
   `<details>`, work item references and attachments are understood, not shown as
   stray syntax.
 - **Mermaid without a runtime.** Diagrams are parsed and drawn by
-  [`merman`](https://docs.rs/merman/) as terminal text. There is no Chromium and
-  no `mmdc`.
+  [`merman`](https://docs.rs/merman/) as terminal text, or rasterised in
+  process for a graphics-capable terminal. There is no Chromium and no `mmdc`.
 - **Local images, where the terminal can show them.** A PNG, JPEG, GIF or WebP
   next to the document is drawn inline with the kitty or iTerm2 graphics
   protocol. No decoder, no network, no external command.
@@ -82,7 +83,7 @@ mdvu --no-pager --plain doc.md       # unstyled text to stdout
 | `-w, --width <COLUMNS>` | Override the rendering width |
 | `-l, --line <LINE>` | Open near the given 1-based source line |
 | `--flavor <FLAVOR>` | `gfm` or `azure-devops` (default: `azure-devops`) |
-| `--mermaid <MODE>` | `unicode`, `ascii`, `source`, `off` (default: `unicode`) |
+| `--mermaid <MODE>` | `unicode`, `ascii`, `image`, `source`, `off` (default: `unicode`) |
 | `--theme <THEME>` | `auto`, `dark`, `light` (default: `auto`) |
 | `--color <WHEN>` | `auto`, `always`, `never` (default: `auto`) |
 | `--hyperlinks <WHEN>` | OSC 8 links in stdout output: `auto`, `always`, `never` (default: `auto`) |
@@ -278,12 +279,13 @@ as ordinary Markdown text.
 
 ## Mermaid
 
-`mdvu` renders Mermaid syntax to Unicode or ASCII terminal text with `merman`.
-Diagrams are rendered once, before layout, so the frame loop never calls the
-renderer.
+`mdvu` renders Mermaid syntax to Unicode or ASCII terminal text with `merman`,
+or to a picture. Diagrams are rendered once, before layout, so the frame loop
+never calls the renderer.
 
 - `--mermaid unicode` (default) uses box drawing characters.
 - `--mermaid ascii` restricts output to 7-bit ASCII.
+- `--mermaid image` draws the diagram as a picture; see below.
 - `--mermaid source` shows the Mermaid source in a labelled block.
 - `--mermaid off` shows a one-line marker.
 
@@ -292,6 +294,21 @@ Other families, including `stateDiagram-v2`, fall back to their source with a
 note. A diagram that fails to parse falls back to its source with a short,
 normalised error; the rest of the document still renders and the process still
 exits `0`.
+
+`--mermaid image` lays the diagram out as SVG with `merman` and rasterises it
+to PNG in process with `resvg`, then draws it like an [image](#images). It
+needs a terminal where images are on; everywhere else — `--images never`,
+`--plain`, a pipe under `--images auto`, an unrecognised terminal — it is the
+same as `unicode`. Families without a text renderer, such as `stateDiagram-v2`,
+`pie` and `gantt`, are drawn too, and a diagram that cannot be drawn as a
+picture falls back to text. The picture is sized as a browser would show it —
+about 8 CSS pixels per column — within the text width and the 20-row cap for
+images, and is drawn at up to twice that resolution so it stays sharp on a
+high-density display; a large diagram is drawn at a lower resolution, since
+some terminals drop very large images. It has a white background so it reads on a dark
+terminal. Images inside a diagram, such as an image shape's `img:`, are
+not drawn: neither local files nor `data` URLs are loaded. Labels use the
+system fonts.
 
 Under the Azure flavor, `mdvu` warns about four documented Azure DevOps
 incompatibilities: the `flowchart` root keyword, long arrows such as `---->`,
@@ -337,9 +354,11 @@ placeholder without an error:
 - the file is at most 10 MiB
 
 An image is scaled to fit the text width and capped at 20 rows, keeping its
-aspect ratio. In the pager it is drawn only while it fits on screen whole: half
-a picture over the status bar is worse than none, and neither protocol can crop
-a placement without sending it again.
+aspect ratio. In the pager, the kitty protocol keeps the image stored in the
+terminal, so scrolling only moves it and an image crossing the top or bottom
+edge shows the rows still on screen. iTerm2 has to be sent the whole image each
+time and cannot crop it, so there an image is drawn only while it fits on
+screen whole.
 
 ## Icons
 

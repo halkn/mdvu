@@ -3,6 +3,7 @@
 //! The document is parsed once before the loop starts. Layout re-runs only when
 //! the terminal size changes or the file is reloaded, never per frame.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -112,6 +113,9 @@ fn event_loop(input: PagerInput) -> Result<()> {
     // What the terminal is currently showing, so an unchanged frame does not
     // re-send image payloads that can be megabytes each.
     let mut shown: Vec<Placed> = Vec::new();
+    // Placements a kitty terminal already stores, so scrolling only re-places.
+    let mut sent: HashSet<u32> = HashSet::new();
+    let protocol = inline.images.map(|support| support.protocol);
 
     if let Some(source_line) = start_line
         && let Some(index) = rendered_line_for_source(&rendered.lines, source_line)
@@ -131,7 +135,7 @@ fn event_loop(input: PagerInput) -> Result<()> {
         let images_changed = wanted != shown;
         // Kitty removes its own placements. iTerm2 draws into the cells, so the
         // only way back is to make `ratatui` repaint the whole screen.
-        if images_changed && !images::erase(&shown)? {
+        if images_changed && images::needs_repaint(&shown) {
             terminal
                 .clear()
                 .map_err(|source| AppError::Terminal { source })?;
@@ -148,7 +152,7 @@ fn event_loop(input: PagerInput) -> Result<()> {
             .draw(|frame| draw(frame, &rendered.lines, &state, &ctx))
             .map_err(|source| AppError::Terminal { source })?;
         if images_changed {
-            images::draw(&wanted)?;
+            images::draw(&shown, &wanted, &mut sent)?;
             shown = wanted;
         }
 
@@ -162,6 +166,7 @@ fn event_loop(input: PagerInput) -> Result<()> {
                     document = reloaded;
                     let anchor = source_line_at(&rendered.lines, state.top);
                     rendered = layout_document(&document, LayoutOptions::new(width), &inline);
+                    images::release(protocol, &mut sent)?;
                     texts = line_texts(&rendered);
                     restore(&mut state, &rendered, &texts, &document, anchor);
                     state.status = Some("reloaded".to_string());
@@ -179,8 +184,8 @@ fn event_loop(input: PagerInput) -> Result<()> {
         match event::read().map_err(|source| AppError::Terminal { source })? {
             Event::Key(key) if key.is_press() => {
                 if !handle_key(&mut state, key, &texts) {
-                    // Leave no image behind on the screen the reader returns to.
-                    images::erase(&shown)?;
+                    // Leave no image on screen or stored in the terminal.
+                    images::release(protocol, &mut sent)?;
                     return Ok(());
                 }
             }
@@ -190,6 +195,8 @@ fn event_loop(input: PagerInput) -> Result<()> {
                 let anchor = source_line_at(&rendered.lines, state.top);
                 width = content_width(columns);
                 rendered = layout_document(&document, LayoutOptions::new(width), &inline);
+                // Every placement is new after a re-layout.
+                images::release(protocol, &mut sent)?;
                 texts = line_texts(&rendered);
                 state.resize(
                     rendered.lines.len(),

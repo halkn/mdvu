@@ -1,12 +1,14 @@
 //! The only module that may reference `merman`.
 //!
 //! Keeping the dependency behind this boundary means a `merman` update can only
-//! break this file. Text output is the sole target: no SVG, raster, browser or
-//! image feature is enabled.
+//! break this file. Output is terminal text, or a PNG for a terminal graphics
+//! protocol; SVG never leaves this module.
 
 use merman::ascii::{AsciiRenderOptions, HeadlessAsciiRenderer};
+use merman::render::HeadlessRenderer;
 
 use crate::cli::MermaidMode;
+use crate::markdown::model::DiagramPng;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DiagramRenderOptions {
@@ -34,6 +36,8 @@ pub trait DiagramRenderer {
         source: &str,
         options: &DiagramRenderOptions,
     ) -> Result<RenderedDiagram, DiagramError>;
+
+    fn render_png(&self, source: &str) -> Result<DiagramPng, DiagramError>;
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -56,6 +60,31 @@ impl DiagramRenderer for MermanRenderer {
                 lines: text.lines().map(str::to_string).collect(),
             }),
             // A diagram that is not detected at all yields no output.
+            Ok(None) => Err(DiagramError {
+                message: "no diagram detected".to_string(),
+                unsupported: true,
+            }),
+            Err(err) => {
+                let message = normalize(&err.to_string());
+                Err(DiagramError {
+                    unsupported: is_unsupported(&message),
+                    message,
+                })
+            }
+        }
+    }
+
+    fn render_png(&self, source: &str) -> Result<DiagramPng, DiagramError> {
+        match HeadlessRenderer::new().render_svg_resvg_safe_sync(source) {
+            Ok(Some(svg)) => super::raster::svg_to_png(&svg)
+                .map(|raster| DiagramPng {
+                    bytes: raster.png,
+                    css_width: raster.css_width,
+                })
+                .map_err(|message| DiagramError {
+                    message: normalize(&message),
+                    unsupported: false,
+                }),
             Ok(None) => Err(DiagramError {
                 message: "no diagram detected".to_string(),
                 unsupported: true,
@@ -155,6 +184,23 @@ mod tests {
     #[test]
     fn nonsense_input_does_not_panic() {
         let _ = render("this is not mermaid at all", MermaidMode::Unicode);
+    }
+
+    #[test]
+    fn a_graph_rasterises_to_png() {
+        let png = MermanRenderer
+            .render_png("graph LR\n  A[開始] --> B[完了]\n")
+            .expect("should rasterise");
+        assert!(png.bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
+    }
+
+    #[test]
+    fn invalid_syntax_fails_to_rasterise_with_a_short_error() {
+        let err = MermanRenderer
+            .render_png("graph LR\n  A -->\n  -->\n")
+            .expect_err("should fail");
+        assert!(!err.message.is_empty());
+        assert!(!err.message.contains('\n'));
     }
 
     #[test]

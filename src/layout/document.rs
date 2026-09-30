@@ -232,6 +232,11 @@ fn diagram(d: &DiagramBlock, width: usize, ctx: &InlineContext, out: &mut Vec<Re
         return;
     }
 
+    if let Some(placement) = drawable_diagram(d, width, ctx) {
+        reserve(&placement, d.range, out);
+        return;
+    }
+
     let (header, body): (String, Vec<String>) = match &d.rendered {
         Some(lines) => (format!("╭─ {}", d.language), lines.clone()),
         None => (
@@ -260,6 +265,15 @@ fn diagram(d: &DiagramBlock, width: usize, ctx: &InlineContext, out: &mut Vec<Re
         d,
         true,
     ));
+}
+
+fn drawable_diagram(
+    d: &DiagramBlock,
+    width: usize,
+    ctx: &InlineContext,
+) -> Option<Rc<crate::image::Placement>> {
+    let png = d.png.as_ref()?;
+    crate::image::from_png(png.bytes.clone(), ctx.images?, width, png.css_width)
 }
 
 /// Show a short error and the original source, so a broken diagram never hides
@@ -359,23 +373,31 @@ fn heading(h: &HeadingBlock, width: usize, ctx: &InlineContext, out: &mut Vec<Re
 
 fn paragraph(p: &ParagraphBlock, width: usize, ctx: &InlineContext, out: &mut Vec<RenderedLine>) {
     if let Some(placement) = drawable_image(p, width, ctx) {
-        // The image covers cells the backend paints over; the reserved lines
-        // stay blank and carry the paragraph's range so `--line` and `--watch`
-        // still find their way back to the source.
-        for row in 0..placement.rows {
-            out.push(RenderedLine {
-                spans: Vec::new(),
-                source_range: Some(p.range),
-                no_wrap: true,
-                image: (row == 0).then(|| Rc::clone(&placement)),
-            });
-        }
+        reserve(&placement, p.range, out);
         return;
     }
     for segment in segments(&p.content, ctx) {
         for line_spans in wrap_spans(&segment, width) {
             out.push(line(line_spans, p.range));
         }
+    }
+}
+
+/// The image covers cells the backend paints over; the reserved lines stay
+/// blank and carry the block's range so `--line` and `--watch` still find their
+/// way back to the source.
+fn reserve(
+    placement: &Rc<crate::image::Placement>,
+    range: SourceRange,
+    out: &mut Vec<RenderedLine>,
+) {
+    for row in 0..placement.rows {
+        out.push(RenderedLine {
+            spans: Vec::new(),
+            source_range: Some(range),
+            no_wrap: true,
+            image: (row == 0).then(|| Rc::clone(placement)),
+        });
     }
 }
 
@@ -652,7 +674,7 @@ mod tests {
     use crate::cli::Flavor;
     use crate::image::{CellSize, ImageSupport, Protocol};
     use crate::layout::icons::IconSet;
-    use crate::markdown::model::AlertKind;
+    use crate::markdown::model::{AlertKind, DiagramPng};
     use crate::source::SourceText;
     use std::io::Write;
     use std::path::Path;
@@ -706,6 +728,47 @@ mod tests {
         assert!(rendered.lines[1..].iter().all(|l| l.image.is_none()));
         assert!(rendered.lines.iter().all(|l| l.source_range.is_some()));
         assert!(rendered.lines.iter().all(|l| l.text().is_empty()));
+    }
+
+    fn render_diagram(ctx: &InlineContext) -> RenderedDocument {
+        let mut document = crate::flavor::parse(
+            SourceText::new("```mermaid\ngraph LR\n  A --> B\n```\n".to_string()),
+            Flavor::Gfm,
+        );
+        let Block::Diagram(d) = &mut document.blocks[0] else {
+            panic!("expected a diagram");
+        };
+        let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec();
+        bytes.extend_from_slice(&13u32.to_be_bytes());
+        bytes.extend_from_slice(b"IHDR");
+        bytes.extend_from_slice(&300u32.to_be_bytes());
+        bytes.extend_from_slice(&60u32.to_be_bytes());
+        bytes.extend_from_slice(&[8, 6, 0, 0, 0]);
+        d.png = Some(DiagramPng {
+            bytes,
+            css_width: 150,
+        });
+        layout_document(&document, LayoutOptions::new(80), ctx)
+    }
+
+    #[test]
+    fn a_diagram_picture_becomes_reserved_lines() {
+        let dir = tempfile::tempdir().expect("temporary directory");
+        let rendered = render_diagram(&context(dir.path(), true));
+        assert_eq!(rendered.lines.len(), 2);
+        let placement = rendered.lines[0].image.as_ref().expect("picture");
+        assert_eq!((placement.cols, placement.rows), (19, 2));
+        assert!(rendered.lines.iter().all(|l| l.source_range.is_some()));
+    }
+
+    /// Without a protocol there is no picture to draw, and the source is shown
+    /// rather than an empty gap.
+    #[test]
+    fn a_diagram_picture_without_a_protocol_shows_the_source() {
+        let dir = tempfile::tempdir().expect("temporary directory");
+        let rendered = render_diagram(&context(dir.path(), false));
+        assert!(rendered.lines.iter().all(|l| l.image.is_none()));
+        assert!(rendered.lines[0].text().contains("(source)"));
     }
 
     #[test]

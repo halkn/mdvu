@@ -42,16 +42,19 @@ fn run(cli: &Cli) -> Result<()> {
     let color = cli.color_choice(ctx, mode);
     let theme = Theme::new(Variant::resolve(cli.theme));
 
+    let images = cli.images(ctx, color);
+    let mermaid = cli.mermaid_mode(images);
+
     let mut document = flavor::parse(SourceText::new(loaded.text), cli.flavor);
-    diagram::resolve(&mut document, cli.mermaid, cli.flavor);
+    diagram::resolve(&mut document, mermaid, cli.flavor);
     let inline = InlineContext {
-        mermaid: cli.mermaid,
+        mermaid,
         // The root depends on the path alone, so a reload under `--watch` keeps
         // the boundary the document was opened with.
         content_root: loaded.base_dir.as_deref().and_then(image::content_root),
         base_dir: loaded.base_dir,
         highlight: cli.highlight(color),
-        images: cli.images(ctx, color).map(image::ImageSupport::detect),
+        images: images.map(image::ImageSupport::detect),
         icons: cli.icons(),
     };
     match mode {
@@ -63,7 +66,7 @@ fn run(cli: &Cli) -> Result<()> {
             flavor: flavor_label(cli.flavor),
             width_override: cli.width.map(usize::from),
             start_line: cli.start_line(),
-            watched: watched(cli, &source),
+            watched: watched(cli, &source, mermaid),
         }),
         cli::OutputMode::Stdout => {
             let options = LayoutOptions::new(resolve_width(cli, ctx));
@@ -82,12 +85,16 @@ fn run(cli: &Cli) -> Result<()> {
 
 /// The file to follow under `--watch`. Stdin has no path, so it is never
 /// watched; the CLI already rejects that combination.
-fn watched(cli: &Cli, source: &cli::InputSource) -> Option<pager::Watched> {
+fn watched(
+    cli: &Cli,
+    source: &cli::InputSource,
+    mermaid: cli::MermaidMode,
+) -> Option<pager::Watched> {
     match source {
         cli::InputSource::File(path) if cli.watch => Some(pager::Watched {
             path: path.clone(),
             flavor: cli.flavor,
-            mermaid: cli.mermaid,
+            mermaid,
         }),
         _ => None,
     }

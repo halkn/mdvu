@@ -16,10 +16,11 @@ path = "src/main.rs"
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
 crossterm = "0.29.0"
-merman = { version = "0.7.0", default-features = false, features = ["ascii"] }
+merman = { version = "0.7.0", default-features = false, features = ["ascii", "render"] }
 notify = "8.2.0"
 pulldown-cmark = { version = "0.13.4", default-features = false }
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"] }
+resvg = { version = "0.46.0", default-features = false, features = ["text", "system-fonts", "memmap-fonts"] }
 serde = { version = "1.0.229", features = ["derive"] }
 syntect = { version = "5.3.0", default-features = false, features = ["parsing", "default-syntaxes", "regex-fancy"] }
 thiserror = "2.0"

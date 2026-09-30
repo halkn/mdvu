@@ -16,6 +16,9 @@ pub enum Protocol {
 const KITTY_CHUNK: usize = 4096;
 
 const ST: &str = "\x1b\\";
+
+/// The placement id of every kitty image. `mdvu` draws each image once.
+const PLACEMENT: u32 = 1;
 /// DECSC / DECRC. The iTerm2 sequence advances the cursor past the image, so it
 /// is bracketed to keep the "does not move the cursor" contract.
 const SAVE_CURSOR: &str = "\x1b7";
@@ -25,7 +28,7 @@ const RESTORE_CURSOR: &str = "\x1b8";
 pub fn place(protocol: Protocol, bytes: &[u8], cols: usize, rows: usize) -> String {
     let payload = base64(bytes);
     match protocol {
-        Protocol::Kitty => kitty(&payload, cols, rows),
+        Protocol::Kitty => kitty(&format!("a=T,f=100,c={cols},r={rows},C=1"), &payload),
         Protocol::Iterm2 => format!(
             "{SAVE_CURSOR}\x1b]1337;File=inline=1;size={};width={cols};height={rows};preserveAspectRatio=1:{payload}\x07{RESTORE_CURSOR}",
             bytes.len()
@@ -33,19 +36,48 @@ pub fn place(protocol: Protocol, bytes: &[u8], cols: usize, rows: usize) -> Stri
     }
 }
 
-/// Removes every image the terminal is showing, or `None` when the protocol has
-/// no such command and the caller must repaint the cells instead.
-pub fn clear(protocol: Protocol) -> Option<&'static str> {
-    match protocol {
-        Protocol::Kitty => Some("\x1b_Ga=d,d=A\x1b\\"),
-        Protocol::Iterm2 => None,
-    }
+/// Stores `bytes` in a kitty terminal under `id` without drawing it, so moving
+/// the image later costs a [`show`] rather than the whole payload again.
+/// `q=2` silences the reply an id would otherwise draw, which would arrive as
+/// input.
+pub fn transmit(bytes: &[u8], id: u32) -> String {
+    kitty(&format!("a=t,f=100,i={id},q=2"), &base64(bytes))
 }
 
-/// `a=T` transmits and displays in one step, `f=100` says the payload is a
-/// complete image file, and `C=1` keeps the cursor still. Payloads are sent in
-/// chunks because a single escape is length limited.
-fn kitty(payload: &str, cols: usize, rows: usize) -> String {
+/// Draws the kitty image stored under `id` at the cursor, occupying `cols` x
+/// `rows` cells. Each image has one placement, so drawing it again replaces the
+/// previous one: that is how an image moves.
+pub fn show(id: u32, cols: usize, rows: usize) -> String {
+    format!("\x1b_Ga=p,i={id},p={PLACEMENT},c={cols},r={rows},C=1,q=2{ST}")
+}
+
+/// Draws the `w` x `h` pixel rectangle at `x`, `y` of the kitty image stored
+/// under `id`, scaled to `cols` x `rows` cells.
+pub fn show_part(id: u32, cols: usize, rows: usize, (x, y, w, h): (u32, u32, u32, u32)) -> String {
+    format!("\x1b_Ga=p,i={id},p={PLACEMENT},x={x},y={y},w={w},h={h},c={cols},r={rows},C=1,q=2{ST}")
+}
+
+/// Removes the kitty image `id` from the screen and keeps what the terminal
+/// stores, so it can be drawn again without being sent.
+///
+/// Only this image's placement is named: an image placed again after `d=a`,
+/// which clears every placement, may not be drawn (`docs/mermaid-image.md`).
+pub fn remove(id: u32) -> String {
+    format!("\x1b_Ga=d,d=i,i={id},p={PLACEMENT},q=2{ST}")
+}
+
+/// Removes the kitty image `id` and frees what the terminal stores for it,
+/// whether or not it is on screen. `d=A` would free only images with a
+/// placement on screen.
+pub fn free(id: u32) -> String {
+    format!("\x1b_Ga=d,d=I,i={id},q=2{ST}")
+}
+
+/// `f=100` says the payload is a complete image file, and `C=1` keeps the
+/// cursor still. Payloads are sent in chunks because a single escape is length
+/// limited; only the first chunk carries the keys, and every chunk carries
+/// `q=2` because a reply would arrive as input.
+fn kitty(keys: &str, payload: &str) -> String {
     let mut out = String::with_capacity(payload.len() + 64);
     let mut chunks = payload
         .as_bytes()
@@ -56,12 +88,10 @@ fn kitty(payload: &str, cols: usize, rows: usize) -> String {
     while let Some(chunk) = chunks.next() {
         let more = u8::from(chunks.peek().is_some());
         if first {
-            out.push_str(&format!(
-                "\x1b_Ga=T,f=100,c={cols},r={rows},C=1,m={more};{chunk}{ST}"
-            ));
+            out.push_str(&format!("\x1b_G{keys},m={more};{chunk}{ST}"));
             first = false;
         } else {
-            out.push_str(&format!("\x1b_Gm={more};{chunk}{ST}"));
+            out.push_str(&format!("\x1b_Gm={more},q=2;{chunk}{ST}"));
         }
     }
     out
@@ -119,9 +149,9 @@ mod tests {
         let out = place(Protocol::Kitty, &bytes, 4, 2);
         assert_eq!(out.matches("\x1b_G").count(), 3);
         assert!(out.starts_with("\x1b_Ga=T,f=100,c=4,r=2,C=1,m=1;"));
-        assert!(out.contains("\x1b_Gm=1;"));
+        assert!(out.contains("\x1b_Gm=1,q=2;"));
         // Only the final chunk clears the "more data follows" flag.
-        assert_eq!(out.matches("m=0;").count(), 1);
+        assert_eq!(out.matches("m=0").count(), 1);
         assert!(out.ends_with(ST));
     }
 
@@ -144,9 +174,52 @@ mod tests {
         assert!(iterm2.ends_with(RESTORE_CURSOR));
     }
 
+    /// With an id the terminal would answer every command, and the answer
+    /// would arrive as input; `q=2` silences it.
     #[test]
-    fn only_kitty_can_delete_what_it_drew() {
-        assert_eq!(clear(Protocol::Kitty), Some("\x1b_Ga=d,d=A\x1b\\"));
-        assert_eq!(clear(Protocol::Iterm2), None);
+    fn a_kitty_transmission_stores_the_image_quietly_without_drawing_it() {
+        let out = transmit(b"foobar", 7);
+        assert_eq!(out, "\x1b_Ga=t,f=100,i=7,q=2,m=0;Zm9vYmFy\x1b\\");
+    }
+
+    #[test]
+    fn a_long_kitty_transmission_is_chunked() {
+        let out = transmit(&vec![0u8; KITTY_CHUNK * 2], 7);
+        assert!(out.starts_with("\x1b_Ga=t,f=100,i=7,q=2,m=1;"));
+        assert_eq!(out.matches("m=0").count(), 1);
+    }
+
+    /// A reply arrives as input, and the pager reads its `G` as "go to the
+    /// end". Whether a terminal takes `q` from the first chunk or the last
+    /// varies, so every chunk carries it.
+    #[test]
+    fn every_chunk_of_a_kitty_transmission_is_quiet() {
+        let out = transmit(&vec![0u8; KITTY_CHUNK * 3], 7);
+        let escapes = out.matches("\x1b_G").count();
+        assert_eq!(escapes, 4);
+        assert_eq!(out.matches("q=2").count(), escapes);
+    }
+
+    /// The fixed placement id makes a second `a=p` replace the first, which
+    /// is how an image moves without being deleted.
+    #[test]
+    fn a_stored_image_is_placed_by_id_without_moving_the_cursor() {
+        assert_eq!(show(7, 10, 5), "\x1b_Ga=p,i=7,p=1,c=10,r=5,C=1,q=2\x1b\\");
+        assert_eq!(
+            show_part(7, 10, 3, (0, 20, 100, 60)),
+            "\x1b_Ga=p,i=7,p=1,x=0,y=20,w=100,h=60,c=10,r=3,C=1,q=2\x1b\\"
+        );
+    }
+
+    /// Lowercase `d=i` removes the placement and keeps the stored data, so the
+    /// image returns without being sent again.
+    #[test]
+    fn removing_one_placement_keeps_its_data() {
+        assert_eq!(remove(7), "\x1b_Ga=d,d=i,i=7,p=1,q=2\x1b\\");
+    }
+
+    #[test]
+    fn freeing_names_the_image_and_drops_its_data() {
+        assert_eq!(free(7), "\x1b_Ga=d,d=I,i=7,q=2\x1b\\");
     }
 }

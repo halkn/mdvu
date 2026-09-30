@@ -177,3 +177,28 @@ fn diagrams_inside_containers_are_resolved() {
         .any(|b| matches!(b, Block::Diagram(d) if d.rendered.is_some()));
     assert!(has_rendered);
 }
+
+#[test]
+fn image_mode_draws_a_png_instead_of_text() {
+    let doc = document(GRAPH, MermaidMode::Image, Flavor::AzureDevops);
+    let d = only_diagram(&doc);
+    let png = d.png.as_ref().expect("should rasterise");
+    assert!(png.bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
+    assert!(png.css_width > 0);
+    assert!(d.rendered.is_none());
+    assert!(d.error.is_none());
+}
+
+#[test]
+fn a_diagram_that_cannot_be_a_picture_reports_like_text() {
+    let broken = "::: mermaid\ngraph LR\n  A -->\n  -->\n:::\n";
+    let doc = document(broken, MermaidMode::Image, Flavor::AzureDevops);
+    let d = only_diagram(&doc);
+    assert!(d.png.is_none());
+    assert!(d.error.is_some());
+    assert!(
+        doc.diagnostics
+            .iter()
+            .any(|x| x.severity == Severity::Error)
+    );
+}
