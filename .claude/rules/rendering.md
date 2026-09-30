@@ -25,9 +25,10 @@ paths:
 
 ## Diagram
 
-diagram は **parse 直後・layout 前に一度だけ** render し、結果を `DiagramBlock::rendered` に保持する。frame loop と resize は renderer を呼ばない。`merman` 0.7 の `AsciiRenderOptions` は幅オプションを持たず出力幅は内容から決まるため、resize で再 render しても結果は同一になる。将来 `merman` が幅指定に対応した場合は、resize 経路から `diagram::resolve` を呼び直すだけで対応できる。
+diagram は **parse 直後・layout 前に一度だけ** render し、結果を `DiagramBlock::rendered`（`--mermaid image` では `DiagramBlock::png`）に保持する。frame loop と resize は renderer を呼ばない。`merman` 0.7 の `AsciiRenderOptions` は幅オプションを持たず出力幅は内容から決まるため、resize で再 render しても結果は同一になる。将来 `merman` が幅指定に対応した場合は、resize 経路から `diagram::resolve` を呼び直すだけで対応できる。
 
 - 描画に失敗した diagram は diagnostic を出してソースへフォールバックし、文書の残りは通常どおり描画され、プロセスは exit 0 のまま。unsupported な diagram family は warning、構文エラーは error として分ける。
+- `--mermaid image`（rasterize の境界・大きさ・解像度）の決定事項は `docs/mermaid-image.md` にある。
 - `azure_compat.rs` の `RULES` は 4 件（`flowchart` root keyword、長い矢印、Font Awesome icon、label 内の HTML タグ）のまま維持する。Azure DevOps の Mermaid サポート仕様は変更が多く、追随コストが実利に見合わない。data-driven な構造は残し、必要が生じた時点で追加する。これは validator ではない。
 
 ## インライン画像
@@ -40,7 +41,7 @@ diagram は **parse 直後・layout 前に一度だけ** render し、結果を 
 - container（quote / list / details）は子行の `image` をそのまま引き継ぐ。落とすと予約された空行だけが残り、何も無い隙間になる。画像の開始桁は「その行が既に持っているテキストの表示幅」なので、prefix を足すだけで自然にずれる。
 - **ファイルを読む条件は `image/mod.rs` に集約する。** content root 配下・スキーム無し・拡張子 allowlist・magic byte 一致・サイズ上限のいずれかを満たさなければ placeholder へ戻す。エラーにも exit code の変化にもしない。mdvu は文書中の宛先を開かないのが既定であり、画像だけが例外なので、その例外の範囲を 1 箇所で読めるようにしておく。
 - **信頼境界は content root（`.git` を持つ最も近い祖先、無ければ文書の親）。** Wiki は添付をページの隣ではなくルートの `.attachments/` に置くため、文書の親では狭すぎる。マーカーに `.attachments` を使わないのは、1 リポジトリに複数あり得て、最も近いものがページの参照先とは限らないため。先頭 `/` は content root 起点として解決し、ファイルシステムの絶対パスとしては扱わない。root の検出は `main.rs` で 1 回だけ行い `InlineContext` で運ぶ（パスにしか依存しないので `--watch` の reload でも変わらない）。
-- 画素寸法はヘッダから直接読む（`image/dimensions.rs`）。デコーダを持ち込まない。プロトコルは元のバイト列を base64 で渡すだけなので、必要なのはセル数の計算に使う寸法だけ。
+- 画素寸法はヘッダから直接読む（`image/dimensions.rs`）。文書が指す画像のデコーダは持ち込まない（`resvg` の PNG encoder は diagram 専用）。プロトコルは元のバイト列を base64 で渡すだけなので、必要なのはセル数の計算に使う寸法だけ。
 
 ## StyleRole
 
