@@ -359,7 +359,7 @@ fn list(
 /// A quote, or a GFM alert when the quote carries a kind.
 ///
 /// An alert reuses the chrome code blocks and diagrams already draw, so the
-/// label survives `--plain`, where colour cannot tell an alert from a quote.
+/// label survives `--color never`, where colour cannot tell an alert from a quote.
 fn quote(
     q: &QuoteBlock,
     width: usize,

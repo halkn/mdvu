@@ -2,9 +2,10 @@ use std::io::IsTerminal;
 use std::path::PathBuf;
 
 use clap::builder::styling::{AnsiColor, Styles};
-use clap::{ArgMatches, CommandFactory, FromArgMatches, Parser, ValueEnum, parser::ValueSource};
+use clap::{ArgMatches, CommandFactory, FromArgMatches, Parser, ValueEnum};
 
 use crate::diagram::MermaidMode;
+use crate::error::AppError;
 use crate::flavor::Flavor;
 use crate::image::Protocol;
 use crate::input::InputSource;
@@ -29,13 +30,9 @@ pub struct Cli {
     /// Markdown file or "-" for stdin
     pub file: Option<String>,
 
-    /// Force the interactive pager
-    #[arg(short = 'p', long, conflicts_with = "no_pager")]
-    pub pager: bool,
-
-    /// Render to stdout without entering the alternate screen
-    #[arg(long = "no-pager")]
-    pub no_pager: bool,
+    /// When to open the interactive pager instead of writing to stdout
+    #[arg(long, value_enum, default_value_t = When::Auto, value_name = "WHEN")]
+    pub paging: When,
 
     /// Override the rendering width
     #[arg(short = 'w', long, value_name = "COLUMNS", value_parser = clap::value_parser!(u16).range(1..))]
@@ -58,19 +55,19 @@ pub struct Cli {
     pub theme: ThemeChoice,
 
     /// ANSI color policy
-    #[arg(long, value_enum, default_value_t = ColorWhen::Auto, value_name = "WHEN")]
-    pub color: ColorWhen,
+    #[arg(long, value_enum, default_value_t = When::Auto, value_name = "WHEN")]
+    pub color: When,
 
     /// OSC 8 terminal hyperlinks in stdout output
-    #[arg(long, value_enum, default_value_t = HyperlinkWhen::Auto, value_name = "WHEN")]
-    pub hyperlinks: HyperlinkWhen,
+    #[arg(long, value_enum, default_value_t = When::Auto, value_name = "WHEN")]
+    pub hyperlinks: When,
 
     /// Syntax highlighting for fenced code blocks
     #[arg(long, value_enum, default_value_t = HighlightWhen::Auto, value_name = "WHEN")]
     pub highlight: HighlightWhen,
 
     /// Draw local images with a terminal graphics protocol
-    #[arg(long, value_enum, default_value_t = ImagesWhen::Auto, value_name = "WHEN")]
+    #[arg(long, value_enum, default_value_t = ImagesWhen::Auto, value_name = "MODE")]
     pub images: ImagesWhen,
 
     /// Glyphs used for alerts, code fences and placeholders
@@ -80,26 +77,17 @@ pub struct Cli {
     /// Re-render the file when it changes on disk
     #[arg(long)]
     pub watch: bool,
-
-    /// Alias for --color never
-    #[arg(long)]
-    pub plain: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum ColorWhen {
+pub enum When {
     Auto,
     Always,
     Never,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum HyperlinkWhen {
-    Auto,
-    Always,
-    Never,
-}
-
+/// `always` is missing because highlighting without ANSI would produce the
+/// same bytes as no highlighting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum HighlightWhen {
     Auto,
@@ -142,6 +130,26 @@ impl TerminalContext {
     }
 }
 
+/// Every decision the flags and the terminal make together, taken once so the
+/// rest of the program only reads the outcome.
+#[derive(Debug)]
+pub struct Settings {
+    pub input: InputSource,
+    pub mode: OutputMode,
+    pub color: ColorChoice,
+    pub hyperlinks: bool,
+    pub images: Option<Protocol>,
+    /// The mode actually drawn, after `image` fell back where images are off.
+    pub mermaid: MermaidMode,
+    pub highlight: bool,
+    pub icons: IconSet,
+    pub theme: ThemeChoice,
+    pub flavor: Flavor,
+    pub width: Option<u16>,
+    pub line: Option<usize>,
+    pub watch: bool,
+}
+
 impl Cli {
     /// Parse argv, rejecting the invalid combinations listed in the CLI contract.
     /// Usage errors exit with code 2 via clap.
@@ -161,25 +169,16 @@ impl Cli {
     ) -> Result<Self, clap::Error> {
         let mut cli = Self::from_arg_matches(matches)?;
         cli.apply(config, matches);
-        // `--plain` is defined as an alias for `--color never`, so pairing it with an
-        // explicit `--color always` is contradictory. A defaulted `--color` is not.
-        let color_from_cli = matches.value_source("color") == Some(ValueSource::CommandLine);
-        if cli.plain && color_from_cli && cli.color == ColorWhen::Always {
-            return Err(Self::command().error(
-                clap::error::ErrorKind::ArgumentConflict,
-                "the argument '--plain' cannot be used with '--color always'",
-            ));
-        }
         if cli.watch {
             // There is nothing to follow when the document arrives on stdin,
             // and nothing to re-render when the pager is not running.
-            if cli.no_pager {
+            if cli.paging == When::Never {
                 return Err(Self::command().error(
                     clap::error::ErrorKind::ArgumentConflict,
-                    "the argument '--watch' cannot be used with '--no-pager'",
+                    "the argument '--watch' cannot be used with '--paging never'",
                 ));
             }
-            if cli.file.as_deref().is_none_or(|file| file == "-") {
+            if !cli.reads_a_file() {
                 return Err(Self::command().error(
                     clap::error::ErrorKind::ArgumentConflict,
                     "the argument '--watch' requires a FILE, not stdin",
@@ -192,48 +191,7 @@ impl Cli {
     /// Take configured values for the flags that were left at their built-in
     /// default. An explicit flag is never overridden.
     fn apply(&mut self, config: &crate::config::Config, matches: &ArgMatches) {
-        let defaulted = |name: &str| matches.value_source(name) == Some(ValueSource::DefaultValue);
-
-        if let Some(flavor) = config.flavor
-            && defaulted("flavor")
-        {
-            self.flavor = flavor;
-        }
-        if let Some(mermaid) = config.mermaid
-            && defaulted("mermaid")
-        {
-            self.mermaid = mermaid;
-        }
-        if let Some(theme) = config.theme
-            && defaulted("theme")
-        {
-            self.theme = theme;
-        }
-        if let Some(color) = config.color
-            && defaulted("color")
-        {
-            self.color = color;
-        }
-        if let Some(hyperlinks) = config.hyperlinks
-            && defaulted("hyperlinks")
-        {
-            self.hyperlinks = hyperlinks;
-        }
-        if let Some(highlight) = config.highlight
-            && defaulted("highlight")
-        {
-            self.highlight = highlight;
-        }
-        if let Some(images) = config.images
-            && defaulted("images")
-        {
-            self.images = images;
-        }
-        if let Some(icons) = config.icons
-            && defaulted("icons")
-        {
-            self.icons = icons;
-        }
+        config.apply_defaults(self, matches);
         // `--width` has no default, so an absent value means it is unset.
         if let Some(width) = config.width
             && self.width.is_none()
@@ -243,44 +201,59 @@ impl Cli {
         // Watching is only meaningful for a file shown in the pager. A
         // configured `watch = true` is skipped where it cannot apply rather
         // than turning an ordinary `mdvu -` into a usage error.
-        if config.watch == Some(true)
-            && !self.no_pager
-            && self.file.as_deref().is_some_and(|file| file != "-")
-        {
+        if config.watch == Some(true) && self.paging != When::Never && self.reads_a_file() {
             self.watch = true;
         }
     }
 
-    pub fn input_source(
-        &self,
-        ctx: TerminalContext,
-    ) -> Result<InputSource, crate::error::AppError> {
+    fn reads_a_file(&self) -> bool {
+        self.file.as_deref().is_some_and(|file| file != "-")
+    }
+
+    pub fn resolve(&self, ctx: TerminalContext) -> Result<Settings, AppError> {
+        let mode = self.output_mode(ctx);
+        let color = self.color_choice(ctx, mode);
+        let images = self.images(ctx, color);
+        Ok(Settings {
+            input: self.input_source(ctx)?,
+            mode,
+            color,
+            hyperlinks: self.hyperlinks(ctx, color),
+            images,
+            mermaid: self.mermaid_mode(images),
+            highlight: self.highlight(color),
+            icons: self.icons,
+            theme: self.theme,
+            flavor: self.flavor,
+            width: self.width,
+            line: self.line,
+            watch: self.watch,
+        })
+    }
+
+    fn input_source(&self, ctx: TerminalContext) -> Result<InputSource, AppError> {
         match self.file.as_deref() {
             Some("-") => Ok(InputSource::Stdin),
             Some(path) => Ok(InputSource::File(PathBuf::from(path))),
             None if !ctx.stdin_is_tty => Ok(InputSource::Stdin),
-            None => Err(crate::error::AppError::MissingInput),
+            None => Err(AppError::MissingInput),
         }
     }
 
-    pub fn output_mode(&self, ctx: TerminalContext) -> OutputMode {
-        if self.pager {
-            OutputMode::Pager
-        } else if self.no_pager || !ctx.stdout_is_tty {
-            OutputMode::Stdout
-        } else {
-            OutputMode::Pager
+    fn output_mode(&self, ctx: TerminalContext) -> OutputMode {
+        match self.paging {
+            When::Always => OutputMode::Pager,
+            When::Never => OutputMode::Stdout,
+            When::Auto if ctx.stdout_is_tty => OutputMode::Pager,
+            When::Auto => OutputMode::Stdout,
         }
     }
 
-    pub fn color_choice(&self, ctx: TerminalContext, mode: OutputMode) -> ColorChoice {
-        if self.plain {
-            return ColorChoice::Plain;
-        }
+    fn color_choice(&self, ctx: TerminalContext, mode: OutputMode) -> ColorChoice {
         match self.color {
-            ColorWhen::Always => ColorChoice::Ansi,
-            ColorWhen::Never => ColorChoice::Plain,
-            ColorWhen::Auto => {
+            When::Always => ColorChoice::Ansi,
+            When::Never => ColorChoice::Plain,
+            When::Auto => {
                 if ctx.no_color_env {
                     ColorChoice::Plain
                 } else if mode == OutputMode::Pager || ctx.stdout_is_tty {
@@ -296,22 +269,22 @@ impl Cli {
     ///
     /// Hyperlinks are escape sequences, so they follow the colour policy: a
     /// plain document stays free of every escape byte, including these.
-    pub fn hyperlinks(&self, ctx: TerminalContext, color: ColorChoice) -> bool {
+    fn hyperlinks(&self, ctx: TerminalContext, color: ColorChoice) -> bool {
         if color == ColorChoice::Plain {
             return false;
         }
         match self.hyperlinks {
-            HyperlinkWhen::Never => false,
-            HyperlinkWhen::Always => true,
+            When::Never => false,
+            When::Always => true,
             // A capture such as `fzf --preview` cannot be detected, so `auto`
             // stays conservative and `--hyperlinks always` opts in.
-            HyperlinkWhen::Auto => ctx.stdout_is_tty,
+            When::Auto => ctx.stdout_is_tty,
         }
     }
 
     /// Whether code blocks are split into syntax roles. Without ANSI every role
     /// would render as the same bytes, so highlighting is skipped entirely.
-    pub fn highlight(&self, color: ColorChoice) -> bool {
+    fn highlight(&self, color: ColorChoice) -> bool {
         self.highlight == HighlightWhen::Auto && color == ColorChoice::Ansi
     }
 
@@ -321,7 +294,7 @@ impl Cli {
     /// same reason hyperlinks do: a plain document stays free of every escape
     /// byte. `auto` also requires a terminal, since a capture such as
     /// `fzf --preview` shows the bytes rather than the picture.
-    pub fn images(&self, ctx: TerminalContext, color: ColorChoice) -> Option<Protocol> {
+    fn images(&self, ctx: TerminalContext, color: ColorChoice) -> Option<Protocol> {
         if color == ColorChoice::Plain {
             return None;
         }
@@ -338,7 +311,7 @@ impl Cli {
 
     /// The Mermaid mode actually drawn. A picture needs a graphics protocol,
     /// so `image` becomes Unicode text wherever images are off.
-    pub fn mermaid_mode(&self, images: Option<Protocol>) -> MermaidMode {
+    fn mermaid_mode(&self, images: Option<Protocol>) -> MermaidMode {
         match (self.mermaid, images) {
             (MermaidMode::Image, None) => MermaidMode::Unicode,
             (mode, _) => mode,
@@ -385,7 +358,7 @@ mod tests {
         assert_eq!(cli.flavor, Flavor::AzureDevops);
         assert_eq!(cli.mermaid, MermaidMode::Unicode);
         assert_eq!(cli.theme, ThemeChoice::Auto);
-        assert_eq!(cli.color, ColorWhen::Auto);
+        assert_eq!(cli.color, When::Auto);
     }
 
     #[test]
@@ -408,12 +381,16 @@ mod tests {
         assert_eq!(cli(&["a.md"]).output_mode(TTY), OutputMode::Pager);
         assert_eq!(cli(&["a.md"]).output_mode(PIPED), OutputMode::Stdout);
         assert_eq!(
-            cli(&["--pager", "a.md"]).output_mode(PIPED),
+            cli(&["--paging", "always", "a.md"]).output_mode(PIPED),
             OutputMode::Pager
         );
         assert_eq!(
-            cli(&["--no-pager", "a.md"]).output_mode(TTY),
+            cli(&["--paging", "never", "a.md"]).output_mode(TTY),
             OutputMode::Stdout
+        );
+        assert_eq!(
+            cli(&["--paging", "auto", "a.md"]).output_mode(TTY),
+            OutputMode::Pager
         );
     }
 
@@ -446,9 +423,9 @@ mod tests {
     }
 
     #[test]
-    fn plain_disables_ansi_everywhere() {
+    fn color_never_disables_ansi_everywhere() {
         assert_eq!(
-            cli(&["--plain", "a.md"]).color_choice(TTY, OutputMode::Pager),
+            cli(&["--color", "never", "a.md"]).color_choice(TTY, OutputMode::Pager),
             ColorChoice::Plain
         );
     }
@@ -459,8 +436,8 @@ mod tests {
             flavor: Some(Flavor::Gfm),
             mermaid: Some(MermaidMode::Ascii),
             theme: Some(ThemeChoice::Light),
-            color: Some(ColorWhen::Never),
-            hyperlinks: Some(HyperlinkWhen::Always),
+            color: Some(When::Never),
+            hyperlinks: Some(When::Always),
             highlight: Some(HighlightWhen::Never),
             images: Some(ImagesWhen::Never),
             icons: Some(IconSet::Nerd),
@@ -471,8 +448,8 @@ mod tests {
         assert_eq!(cli.flavor, Flavor::Gfm);
         assert_eq!(cli.mermaid, MermaidMode::Ascii);
         assert_eq!(cli.theme, ThemeChoice::Light);
-        assert_eq!(cli.color, ColorWhen::Never);
-        assert_eq!(cli.hyperlinks, HyperlinkWhen::Always);
+        assert_eq!(cli.color, When::Never);
+        assert_eq!(cli.hyperlinks, When::Always);
         assert_eq!(cli.highlight, HighlightWhen::Never);
         assert_eq!(cli.images, ImagesWhen::Never);
         assert_eq!(cli.icons, IconSet::Nerd);
@@ -500,7 +477,7 @@ mod tests {
     #[test]
     fn icons_are_independent_of_the_colour_policy() {
         assert_eq!(
-            cli(&["--plain", "--icons", "nerd", "a.md"]).icons,
+            cli(&["--color", "never", "--icons", "nerd", "a.md"]).icons,
             IconSet::Nerd
         );
     }
@@ -532,10 +509,6 @@ mod tests {
     #[test]
     fn hyperlinks_follow_the_color_policy() {
         // A plain document must not contain any escape byte, hyperlinks included.
-        assert!(
-            !cli(&["--plain", "--hyperlinks", "always", "a.md"])
-                .hyperlinks(TTY, ColorChoice::Plain)
-        );
         assert!(!cli(&["--hyperlinks", "always", "a.md"]).hyperlinks(TTY, ColorChoice::Plain));
         assert!(cli(&["--hyperlinks", "always", "a.md"]).hyperlinks(PIPED, ColorChoice::Ansi));
         assert!(!cli(&["--hyperlinks", "never", "a.md"]).hyperlinks(TTY, ColorChoice::Ansi));
@@ -597,15 +570,31 @@ mod tests {
     }
 
     #[test]
-    fn plain_alongside_a_defaulted_color_is_accepted() {
-        assert!(try_cli(&["--plain", "a.md"]).is_ok());
-        assert!(try_cli(&["--plain", "--color", "never", "a.md"]).is_ok());
+    fn watch_needs_a_file_and_the_pager() {
+        assert!(try_cli(&["--watch", "a.md"]).is_ok());
+        assert!(try_cli(&["--watch", "--paging", "always", "a.md"]).is_ok());
+        assert!(try_cli(&["--watch", "--paging", "never", "a.md"]).is_err());
+        assert!(try_cli(&["--watch", "-"]).is_err());
+    }
+
+    /// A configured `watch = true` is dropped where it cannot apply instead of
+    /// turning every `--paging never` run into a usage error.
+    #[test]
+    fn configured_watch_is_skipped_without_the_pager() {
+        let config = Config {
+            watch: Some(true),
+            ..Config::default()
+        };
+        assert!(configured(&["a.md"], &config).watch);
+        assert!(!configured(&["--paging", "never", "a.md"], &config).watch);
+        assert!(!configured(&["-"], &config).watch);
     }
 
     #[test]
     fn rejected_combinations() {
-        assert!(try_cli(&["--plain", "--color", "always", "a.md"]).is_err());
-        assert!(try_cli(&["--pager", "--no-pager", "a.md"]).is_err());
+        assert!(try_cli(&["--plain", "a.md"]).is_err());
+        assert!(try_cli(&["--pager", "a.md"]).is_err());
+        assert!(try_cli(&["--no-pager", "a.md"]).is_err());
         assert!(try_cli(&["--width", "0", "a.md"]).is_err());
         assert!(try_cli(&["--line", "0", "a.md"]).is_err());
     }

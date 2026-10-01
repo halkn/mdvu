@@ -21,7 +21,9 @@ fn render(args: &[&str]) -> String {
 }
 
 fn plain(fixture: &str, width: &str) -> String {
-    render(&["--no-pager", "--plain", "--width", width, fixture])
+    render(&[
+        "--paging", "never", "--color", "never", "--width", width, fixture,
+    ])
 }
 
 macro_rules! golden {
@@ -35,7 +37,10 @@ macro_rules! golden {
 
 /// Styled output, with the escapes made visible so a snapshot stays readable.
 fn styled(fixture: &str, width: &str) -> String {
-    render(&["--no-pager", "--color", "always", "--width", width, fixture]).replace('\x1b', "ESC")
+    render(&[
+        "--paging", "never", "--color", "always", "--width", width, fixture,
+    ])
+    .replace('\x1b', "ESC")
 }
 
 golden!(gfm_showcase_40, "tests/fixtures/gfm/showcase.md", "40");
@@ -87,7 +92,7 @@ golden!(
 );
 
 fn plain_with(fixture: &str, width: &str, extra: &[&str]) -> String {
-    let mut args = vec!["--no-pager", "--plain", "--width", width];
+    let mut args = vec!["--paging", "never", "--color", "never", "--width", width];
     args.extend_from_slice(extra);
     args.push(fixture);
     render(&args)
@@ -208,7 +213,7 @@ golden_with!(
     ["--mermaid", "off"]
 );
 
-// Glyphs are characters rather than escapes, so `--plain` still shows them and
+// Glyphs are characters rather than escapes, so `--color never` still shows them and
 // the golden files record them. Every other snapshot stays on the default set,
 // which is what proves the default output is unchanged.
 golden_with!(
@@ -285,7 +290,8 @@ fn plain_output_contains_no_ansi_escapes() {
 #[test]
 fn color_always_emits_ansi_even_when_captured() {
     let out = render(&[
-        "--no-pager",
+        "--paging",
+        "never",
         "--color",
         "always",
         "--width",
@@ -297,24 +303,12 @@ fn color_always_emits_ansi_even_when_captured() {
 }
 
 #[test]
-fn color_never_matches_plain() {
-    let never = render(&[
-        "--no-pager",
-        "--color",
-        "never",
-        "--width",
-        "80",
-        "tests/fixtures/gfm/showcase.md",
-    ]);
-    assert_eq!(never, plain("tests/fixtures/gfm/showcase.md", "80"));
-}
-
-#[test]
 fn no_color_env_disables_ansi_under_auto() {
     let out = Command::cargo_bin("mdvu")
         .expect("binary should be built")
         .args([
-            "--no-pager",
+            "--paging",
+            "never",
             "--width",
             "80",
             "tests/fixtures/gfm/showcase.md",
