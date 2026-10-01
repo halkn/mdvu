@@ -1,4 +1,5 @@
-use crate::cli::{Flavor, MermaidMode};
+use crate::diagram::MermaidMode;
+use crate::flavor::Flavor;
 use crate::diagnostic::Severity;
 use crate::diagram::resolve;
 use crate::flavor;

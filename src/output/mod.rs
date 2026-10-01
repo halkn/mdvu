@@ -6,10 +6,16 @@ pub mod plain;
 
 use std::io::Write;
 
-use crate::cli::ColorChoice;
 use crate::error::{AppError, Result};
 use crate::layout::theme::Theme;
 use crate::layout::{RenderedDocument, RenderedLine, RenderedSpan};
+
+/// Whether the stdout backend emits ANSI escapes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColorChoice {
+    Ansi,
+    Plain,
+}
 
 pub fn write_document(
     out: &mut impl Write,

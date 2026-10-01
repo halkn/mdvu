@@ -1,5 +1,4 @@
-use crate::cli::Flavor;
-use crate::flavor::parse;
+use crate::flavor::{Flavor, parse};
 use crate::markdown::model::*;
 use crate::source::SourceText;
 

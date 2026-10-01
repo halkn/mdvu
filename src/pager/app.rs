@@ -11,7 +11,8 @@ use crossterm::event::{self, Event};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
-use crate::cli::{Flavor, MermaidMode};
+use crate::diagram::MermaidMode;
+use crate::flavor::Flavor;
 use crate::error::{AppError, Result};
 use crate::input;
 use crate::layout::inline::InlineContext;
@@ -41,7 +42,7 @@ pub struct Watched {
 
 impl Watched {
     fn reload(&self) -> Result<Document> {
-        let loaded = input::load(&crate::cli::InputSource::File(self.path.clone()))?;
+        let loaded = input::load(&input::InputSource::File(self.path.clone()))?;
         let mut document = crate::flavor::parse(SourceText::new(loaded.text), self.flavor);
         crate::diagram::resolve(&mut document, self.mermaid, self.flavor);
         Ok(document)

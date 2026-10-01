@@ -7,7 +7,7 @@
 use merman::ascii::{AsciiRenderOptions, HeadlessAsciiRenderer};
 use merman::render::HeadlessRenderer;
 
-use crate::cli::MermaidMode;
+use crate::diagram::MermaidMode;
 use crate::markdown::model::DiagramPng;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -10,13 +10,18 @@
 //! terminals that draw them two columns wide are off by one instead of by two,
 //! and the space keeps the glyph from touching the label.
 
+use clap::ValueEnum;
+
 use crate::markdown::model::AlertKind;
 
 /// Which glyphs the rendered surface uses.
 ///
 /// `Unicode` produces an empty prefix everywhere, so the default output is
-/// byte-for-byte what it was before icons existed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// byte-for-byte what it was before icons existed. `nerd` is opt-in and never
+/// detected: whether a Nerd Font is installed is a property of the terminal's
+/// font, and asking the terminal would mean writing to the tty and waiting for
+/// an answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, ValueEnum)]
 pub enum IconSet {
     #[default]
     Unicode,

@@ -1,8 +1,14 @@
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use crate::cli::InputSource;
 use crate::error::{AppError, Result};
+
+/// Where the Markdown source comes from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InputSource {
+    File(PathBuf),
+    Stdin,
+}
 
 /// UTF-8 Markdown together with the provenance the renderer needs for the
 /// status bar and for resolving relative link targets.

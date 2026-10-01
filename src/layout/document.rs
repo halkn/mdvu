@@ -6,7 +6,7 @@
 
 use std::rc::Rc;
 
-use crate::cli::MermaidMode;
+use crate::diagram::MermaidMode;
 use crate::layout::highlight;
 use crate::layout::inline::{InlineContext, segments, spans};
 use crate::layout::table::layout_table;
@@ -671,7 +671,7 @@ fn expand_tabs(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cli::Flavor;
+    use crate::flavor::Flavor;
     use crate::image::{CellSize, ImageSupport, Protocol};
     use crate::layout::icons::IconSet;
     use crate::markdown::model::{AlertKind, DiagramPng};

@@ -12,10 +12,22 @@ mod raster;
 #[cfg(test)]
 mod tests;
 
-use crate::cli::{Flavor, MermaidMode};
+use clap::ValueEnum;
+
 use crate::diagnostic::Diagnostic;
+use crate::flavor::Flavor;
 use crate::markdown::model::{Block, DiagramBlock, Document};
 use mermaid::{DiagramRenderOptions, DiagramRenderer, MermanRenderer};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, ValueEnum)]
+pub enum MermaidMode {
+    #[default]
+    Unicode,
+    Ascii,
+    Image,
+    Source,
+    Off,
+}
 
 pub fn resolve(document: &mut Document, mode: MermaidMode, flavor: Flavor) {
     let renderer = MermanRenderer;

@@ -20,7 +20,7 @@ pub struct InlineContext {
     /// How diagram blocks are presented. Diagrams are rendered before layout;
     /// this only selects between the rendered form, the source and an omitted
     /// marker.
-    pub mermaid: crate::cli::MermaidMode,
+    pub mermaid: crate::diagram::MermaidMode,
     /// Whether code blocks are split into syntax roles. Off for plain output,
     /// where every role would collapse to the same bytes anyway.
     pub highlight: bool,

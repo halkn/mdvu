@@ -55,7 +55,7 @@ fn run(cli: &Cli) -> Result<()> {
         base_dir: loaded.base_dir,
         highlight: cli.highlight(color),
         images: images.map(image::ImageSupport::detect),
-        icons: cli.icons(),
+        icons: cli.icons,
     };
     match mode {
         cli::OutputMode::Pager => pager::run(pager::PagerInput {
@@ -87,11 +87,11 @@ fn run(cli: &Cli) -> Result<()> {
 /// watched; the CLI already rejects that combination.
 fn watched(
     cli: &Cli,
-    source: &cli::InputSource,
-    mermaid: cli::MermaidMode,
+    source: &input::InputSource,
+    mermaid: diagram::MermaidMode,
 ) -> Option<pager::Watched> {
     match source {
-        cli::InputSource::File(path) if cli.watch => Some(pager::Watched {
+        input::InputSource::File(path) if cli.watch => Some(pager::Watched {
             path: path.clone(),
             flavor: cli.flavor,
             mermaid,
@@ -100,10 +100,10 @@ fn watched(
     }
 }
 
-fn flavor_label(flavor: cli::Flavor) -> &'static str {
+fn flavor_label(flavor: flavor::Flavor) -> &'static str {
     match flavor {
-        cli::Flavor::Gfm => "gfm",
-        cli::Flavor::AzureDevops => "azure-devops",
+        flavor::Flavor::Gfm => "gfm",
+        flavor::Flavor::AzureDevops => "azure-devops",
     }
 }
 
