@@ -1,6 +1,7 @@
 //! Terminal layout: document IR to a rendered surface carrying semantic style
 //! roles. No ratatui or ANSI types appear here; the output backends map roles.
 
+mod diagram;
 pub mod document;
 pub mod highlight;
 pub mod icons;

@@ -6,21 +6,20 @@
 
 use std::rc::Rc;
 
-use crate::diagram::MermaidMode;
-use crate::layout::highlight;
 use crate::layout::inline::{InlineContext, segments, spans};
 use crate::layout::table::layout_table;
 use crate::layout::wrap::{display_width, wrap_spans};
 use crate::layout::{LayoutOptions, RenderedDocument, RenderedLine, RenderedSpan, StyleRole};
+use crate::layout::{diagram, highlight};
 use crate::markdown::model::{
-    Block, CodeBlock, DetailsBlock, DiagramBlock, Document, FootnoteBlock, HeadingBlock, Inline,
-    ListBlock, ParagraphBlock, PlaceholderBlock, QuoteBlock, RawHtmlBlock, TocBlock,
+    Block, CodeBlock, DetailsBlock, Document, FootnoteBlock, HeadingBlock, Inline, ListBlock,
+    ParagraphBlock, PlaceholderBlock, QuoteBlock, RawHtmlBlock, TocBlock,
 };
 use crate::source::SourceRange;
 
 const TAB_STOP: usize = 4;
 
-const BORDER: &str = "│ ";
+pub(super) const BORDER: &str = "│ ";
 
 pub fn layout_document(
     document: &Document,
@@ -81,7 +80,7 @@ fn layout_block(
         Block::Toc(t) => toc(t, width, out),
         Block::Details(d) => details(d, width, depth, ctx, out),
         Block::Placeholder(p) => placeholder(p, width, out),
-        Block::Diagram(d) => diagram(d, width, ctx, out),
+        Block::Diagram(d) => diagram::diagram(d, width, ctx, out),
     }
 }
 
@@ -203,142 +202,6 @@ fn placeholder(p: &PlaceholderBlock, width: usize, out: &mut Vec<RenderedLine>) 
     }
 }
 
-fn diagram(d: &DiagramBlock, width: usize, ctx: &InlineContext, out: &mut Vec<RenderedLine>) {
-    if ctx.mermaid == MermaidMode::Off {
-        out.push(line(
-            vec![RenderedSpan::new(
-                format!("[{} diagram omitted]", d.language),
-                StyleRole::Muted,
-            )],
-            d.range,
-        ));
-        return;
-    }
-
-    // Compatibility warnings sit directly above the diagram they describe.
-    for warning in &d.warnings {
-        for spans in wrap_spans(
-            &[RenderedSpan::new(
-                format!("! {warning}"),
-                StyleRole::Warning,
-            )],
-            width,
-        ) {
-            out.push(line(spans, d.range));
-        }
-    }
-
-    if let Some(message) = &d.error {
-        error_fallback(d, message, width, out);
-        return;
-    }
-
-    if let Some(placement) = drawable_diagram(d, width, ctx) {
-        reserve(&placement, d.range, out);
-        return;
-    }
-
-    let (header, body): (String, Vec<String>) = match &d.rendered {
-        Some(lines) => (format!("╭─ {}", d.language), lines.clone()),
-        None => (
-            format!("╭─ {} (source)", d.language),
-            d.source.lines().map(str::to_string).collect(),
-        ),
-    };
-
-    out.push(preformatted(header, StyleRole::DiagramBorder, d, true));
-    for text in body {
-        out.push(RenderedLine {
-            spans: vec![
-                RenderedSpan::new(BORDER, StyleRole::DiagramBorder),
-                // Diagram lines keep their leading whitespace and are never
-                // re-wrapped; the pager scrolls horizontally instead.
-                RenderedSpan::new(expand_tabs(&text), StyleRole::Diagram),
-            ],
-            source_range: Some(d.range),
-            no_wrap: true,
-            image: None,
-        });
-    }
-    out.push(preformatted(
-        "╰─".to_string(),
-        StyleRole::DiagramBorder,
-        d,
-        true,
-    ));
-}
-
-fn drawable_diagram(
-    d: &DiagramBlock,
-    width: usize,
-    ctx: &InlineContext,
-) -> Option<Rc<crate::image::Placement>> {
-    let png = d.png.as_ref()?;
-    crate::image::from_png(png.bytes.clone(), ctx.images?, width, png.css_width)
-}
-
-/// Show a short error and the original source, so a broken diagram never hides
-/// what the author wrote.
-fn error_fallback(d: &DiagramBlock, message: &str, width: usize, out: &mut Vec<RenderedLine>) {
-    let (title, role) = if d.unsupported {
-        ("Mermaid diagram not supported as text", StyleRole::Warning)
-    } else {
-        ("Mermaid render error", StyleRole::Error)
-    };
-    let dashes = width.saturating_sub(display_width(title) + 4).max(2);
-    out.push(preformatted(
-        format!("╭─ {title} {}", "─".repeat(dashes)),
-        role,
-        d,
-        true,
-    ));
-    for spans in wrap_spans(
-        &[RenderedSpan::new(message, role)],
-        width.saturating_sub(2).max(1),
-    ) {
-        let mut all = vec![RenderedSpan::new(BORDER, role)];
-        all.extend(spans);
-        out.push(RenderedLine {
-            spans: all,
-            source_range: Some(d.range),
-            no_wrap: false,
-            image: None,
-        });
-    }
-    out.push(preformatted(
-        format!("├{}", "─".repeat(width.saturating_sub(1).max(2))),
-        role,
-        d,
-        true,
-    ));
-    for text in d.source.lines() {
-        out.push(RenderedLine {
-            spans: vec![
-                RenderedSpan::new(BORDER, role),
-                RenderedSpan::new(expand_tabs(text), StyleRole::Diagram),
-            ],
-            source_range: Some(d.range),
-            no_wrap: true,
-            image: None,
-        });
-    }
-    out.push(preformatted(
-        format!("╰{}", "─".repeat(width.saturating_sub(1).max(2))),
-        role,
-        d,
-        true,
-    ));
-}
-
-fn preformatted(text: String, role: StyleRole, d: &DiagramBlock, no_wrap: bool) -> RenderedLine {
-    RenderedLine {
-        spans: vec![RenderedSpan::new(text, role)],
-        source_range: Some(d.range),
-        no_wrap,
-        image: None,
-    }
-}
-
 fn heading(h: &HeadingBlock, width: usize, ctx: &InlineContext, out: &mut Vec<RenderedLine>) {
     let level = h.level.min(6);
     let marker = format!("{} ", "#".repeat(level as usize));
@@ -387,7 +250,7 @@ fn paragraph(p: &ParagraphBlock, width: usize, ctx: &InlineContext, out: &mut Ve
 /// The image covers cells the backend paints over; the reserved lines stay
 /// blank and carry the block's range so `--line` and `--watch` still find their
 /// way back to the source.
-fn reserve(
+pub(super) fn reserve(
     placement: &Rc<crate::image::Placement>,
     range: SourceRange,
     out: &mut Vec<RenderedLine>,
@@ -641,7 +504,7 @@ fn raw_html(h: &RawHtmlBlock, out: &mut Vec<RenderedLine>) {
     }
 }
 
-fn line(spans: Vec<RenderedSpan>, range: SourceRange) -> RenderedLine {
+pub(super) fn line(spans: Vec<RenderedSpan>, range: SourceRange) -> RenderedLine {
     RenderedLine {
         spans,
         source_range: Some(range),
@@ -652,7 +515,7 @@ fn line(spans: Vec<RenderedSpan>, range: SourceRange) -> RenderedLine {
 
 /// Expand tabs to fixed tab stops so code indentation survives in a terminal
 /// that would otherwise apply its own tab handling.
-fn expand_tabs(text: &str) -> String {
+pub(super) fn expand_tabs(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut column = 0usize;
     for ch in text.chars() {
