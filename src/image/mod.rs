@@ -9,6 +9,7 @@ pub mod protocol;
 
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use dimensions::{Format, Pixels};
 pub use protocol::Protocol;
@@ -19,7 +20,7 @@ const MAX_BYTES: u64 = 10 * 1024 * 1024;
 
 /// Tallest image, in cells. An image is useless once it is taller than the
 /// viewport, and the layout has no height to measure against.
-const MAX_ROWS: usize = 20;
+pub const MAX_ROWS: usize = 20;
 
 /// Used when the terminal reports no pixel size. Cells are about twice as tall
 /// as they are wide, which is enough to keep an image from looking stretched.
@@ -29,7 +30,8 @@ const ASSUMED_CELL: CellSize = CellSize {
 };
 
 /// Formats both protocols decode themselves. SVG is absent on purpose: no
-/// terminal renders it, and rasterising would mean shipping a renderer.
+/// terminal renders it, and the rasteriser in `diagram` only ever sees SVG that
+/// `merman` produced.
 const ALLOWED: &[(&str, Format)] = &[
     ("png", Format::Png),
     ("jpg", Format::Jpeg),
@@ -37,6 +39,10 @@ const ALLOWED: &[(&str, Format)] = &[
     ("gif", Format::Gif),
     ("webp", Format::WebP),
 ];
+
+/// A monospace cell in a browser, in CSS pixels, for sizing pictures `mdvu`
+/// drew itself.
+const CSS_CELL_WIDTH: usize = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CellSize {
@@ -70,19 +76,60 @@ impl ImageSupport {
 pub struct Placement {
     pub cols: usize,
     pub rows: usize,
+    /// Unique within the process, so a kitty terminal can keep the image
+    /// stored under it while the pager scrolls.
+    pub id: u32,
     protocol: Protocol,
+    pixels: Pixels,
     bytes: Vec<u8>,
 }
 
 impl Placement {
-    /// The escape sequence that draws this image at the cursor. It leaves the
-    /// cursor where it was.
+    /// The escape sequence that sends and draws this image at the cursor in
+    /// one step. It leaves the cursor where it was.
     pub fn escape(&self) -> String {
         protocol::place(self.protocol, &self.bytes, self.cols, self.rows)
     }
 
-    pub fn clear(&self) -> Option<&'static str> {
-        protocol::clear(self.protocol)
+    /// The escape sequence that stores this image in the terminal under `id`
+    /// without drawing it, or `None` when the protocol cannot store images.
+    pub fn transmit(&self) -> Option<String> {
+        match self.protocol {
+            Protocol::Kitty => Some(protocol::transmit(&self.bytes, self.id)),
+            Protocol::Iterm2 => None,
+        }
+    }
+
+    /// Whether the terminal keeps the image, so it can be moved, cropped and
+    /// removed without being sent again.
+    pub fn stored(&self) -> bool {
+        self.protocol == Protocol::Kitty
+    }
+
+    /// The escape sequence that removes this image from the screen, or `None`
+    /// when the protocol can only repaint the whole screen.
+    pub fn remove(&self) -> Option<String> {
+        self.stored().then(|| protocol::remove(self.id))
+    }
+
+    /// The escape sequence that draws `rows` of this image's rows, starting at
+    /// row `skip`, at the cursor after [`Placement::transmit`], or the whole
+    /// image where nothing was stored.
+    pub fn show(&self, skip: usize, rows: usize) -> String {
+        match self.protocol {
+            Protocol::Kitty if skip == 0 && rows == self.rows => {
+                protocol::show(self.id, self.cols, self.rows)
+            }
+            Protocol::Kitty => {
+                let height = u64::from(self.pixels.height);
+                let at = |row: usize| (row as u64 * height / self.rows as u64) as u32;
+                let top = at(skip);
+                let bottom = at(skip + rows);
+                let source = (0, top, self.pixels.width, bottom - top);
+                protocol::show_part(self.id, self.cols, rows, source)
+            }
+            Protocol::Iterm2 => self.escape(),
+        }
     }
 }
 
@@ -163,13 +210,53 @@ pub fn resolve(
     if dimensions::format_of(&bytes) != Some(expected) {
         return None;
     }
-    let (cols, rows) = fit(dimensions::dimensions(&bytes)?, support.cell, max_cols);
-    Some(Rc::new(Placement {
+    let pixels = dimensions::dimensions(&bytes)?;
+    Some(place(
+        bytes,
+        support.protocol,
+        pixels,
+        fit(pixels, support.cell, max_cols),
+    ))
+}
+
+/// Places a PNG `mdvu` drew itself, such as a rasterised diagram, that is
+/// `css_width` CSS pixels wide. No file is read, so only the format and the
+/// area are checked.
+///
+/// Its size follows the CSS pixels a browser would show rather than the
+/// terminal's cell or the picture's resolution: a high-density display reports
+/// device pixels, which would halve the picture, and a large diagram is drawn
+/// at a lower resolution than a small one.
+pub fn from_png(
+    bytes: Vec<u8>,
+    support: ImageSupport,
+    max_cols: usize,
+    css_width: u32,
+) -> Option<Rc<Placement>> {
+    if max_cols == 0 || dimensions::format_of(&bytes) != Some(Format::Png) {
+        return None;
+    }
+    let pixels = dimensions::dimensions(&bytes)?;
+    let natural_cols = (css_width as usize).div_ceil(CSS_CELL_WIDTH).max(1);
+    let area = fit_cols(pixels, support.cell, natural_cols, max_cols);
+    Some(place(bytes, support.protocol, pixels, area))
+}
+
+fn place(
+    bytes: Vec<u8>,
+    protocol: Protocol,
+    pixels: Pixels,
+    (cols, rows): (usize, usize),
+) -> Rc<Placement> {
+    static NEXT_ID: AtomicU32 = AtomicU32::new(1);
+    Rc::new(Placement {
         cols,
         rows,
-        protocol: support.protocol,
+        id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
+        protocol,
+        pixels,
         bytes,
-    }))
+    })
 }
 
 /// A local path, or `None` for anything with a URL scheme. Remote images are
@@ -290,6 +377,27 @@ fn cell_size(columns: u16, rows: u16, width: u16, height: u16) -> CellSize {
     }
 }
 
+/// Cells a picture `natural_cols` wide should cover, never wider than
+/// `max_cols` or taller than `MAX_ROWS`, with the aspect ratio kept.
+fn fit_cols(
+    pixels: Pixels,
+    cell: CellSize,
+    natural_cols: usize,
+    max_cols: usize,
+) -> (usize, usize) {
+    let (width, height) = (u64::from(pixels.width.max(1)), u64::from(pixels.height));
+    let (cell_w, cell_h) = (u64::from(cell.width), u64::from(cell.height));
+    let rows_for =
+        |cols: usize| ((cols as u64 * cell_w * height).div_ceil(width * cell_h) as usize).max(1);
+    let cols = natural_cols.min(max_cols).max(1);
+    let rows = rows_for(cols);
+    if rows <= MAX_ROWS {
+        return (cols, rows);
+    }
+    let cols = ((MAX_ROWS as u64 * cell_h * width) / (height * cell_w).max(1)) as usize;
+    (cols.clamp(1, max_cols), MAX_ROWS)
+}
+
 /// Cells the image should cover, never wider than `max_cols` or taller than
 /// `MAX_ROWS`, with the aspect ratio kept.
 fn fit(pixels: Pixels, cell: CellSize, max_cols: usize) -> (usize, usize) {
@@ -332,6 +440,42 @@ mod tests {
             height: 20,
         },
     };
+
+    /// 442 CSS px wide: 8 CSS px per column, whatever the terminal's own cell
+    /// or the picture's resolution measures.
+    #[test]
+    fn a_drawn_png_is_sized_by_its_css_pixels() {
+        let placement = from_png(png(884, 366), SUPPORT, 80, 442).expect("placed");
+        assert_eq!((placement.cols, placement.rows), (56, 12));
+
+        let dense = ImageSupport {
+            cell: CellSize {
+                width: 18,
+                height: 36,
+            },
+            ..SUPPORT
+        };
+        let placement = from_png(png(884, 366), dense, 80, 442).expect("placed");
+        assert_eq!((placement.cols, placement.rows), (56, 12));
+
+        let coarse = from_png(png(442, 183), SUPPORT, 80, 442).expect("placed");
+        assert_eq!((coarse.cols, coarse.rows), (56, 12));
+    }
+
+    #[test]
+    fn a_drawn_png_still_fits_the_width_and_the_row_cap() {
+        let narrow = from_png(png(884, 366), SUPPORT, 28, 442).expect("placed");
+        assert_eq!((narrow.cols, narrow.rows), (28, 6));
+        let tall = from_png(png(1096, 900), SUPPORT, 80, 548).expect("placed");
+        assert_eq!(tall.rows, MAX_ROWS);
+        assert!(tall.cols < 69, "{}", tall.cols);
+    }
+
+    #[test]
+    fn bytes_that_are_not_a_png_are_not_placed() {
+        assert!(from_png(b"GIF89a".to_vec(), SUPPORT, 80, 100).is_none());
+        assert!(from_png(png(200, 100), SUPPORT, 0, 100).is_none());
+    }
 
     fn write(dir: &Path, name: &str, bytes: &[u8]) -> PathBuf {
         let path = dir.join(name);

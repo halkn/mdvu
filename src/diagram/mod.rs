@@ -1,18 +1,20 @@
 //! Diagram resolution.
 //!
 //! Diagrams are rendered once, after parsing and before any layout, so the
-//! frame loop never calls the renderer. `merman`'s text output does not depend
-//! on a target width, so a resize reuses the same rendered diagram.
+//! frame loop never calls the renderer. Neither `merman`'s text output nor the
+//! PNG depends on a target width, so a resize reuses the same rendered diagram;
+//! the terminal scales a picture to the cells it is given.
 
 pub mod azure_compat;
 pub mod mermaid;
+mod raster;
 
 #[cfg(test)]
 mod tests;
 
 use crate::cli::{Flavor, MermaidMode};
 use crate::diagnostic::Diagnostic;
-use crate::markdown::model::{Block, Document};
+use crate::markdown::model::{Block, DiagramBlock, Document};
 use mermaid::{DiagramRenderOptions, DiagramRenderer, MermanRenderer};
 
 pub fn resolve(document: &mut Document, mode: MermaidMode, flavor: Flavor) {
@@ -47,25 +49,13 @@ fn resolve_blocks(
                 match mode {
                     // Source and off never invoke the renderer.
                     MermaidMode::Source | MermaidMode::Off => {}
+                    MermaidMode::Image => match renderer.render_png(&diagram.source) {
+                        Ok(png) => diagram.png = Some(png),
+                        // Text may still draw it, and reports the error if not.
+                        Err(_) => render_text(diagram, renderer, MermaidMode::Unicode, diagnostics),
+                    },
                     MermaidMode::Unicode | MermaidMode::Ascii => {
-                        match renderer.render(&diagram.source, &DiagramRenderOptions { mode }) {
-                            Ok(rendered) => diagram.rendered = Some(rendered.lines),
-                            Err(error) => {
-                                // A failed diagram falls back to its source and
-                                // never fails the document.
-                                let severity = if error.unsupported {
-                                    Diagnostic::warning
-                                } else {
-                                    Diagnostic::error
-                                };
-                                diagnostics.push(severity(
-                                    format!("mermaid: {}", error.message),
-                                    Some(diagram.range),
-                                ));
-                                diagram.unsupported = error.unsupported;
-                                diagram.error = Some(error.message);
-                            }
-                        }
+                        render_text(diagram, renderer, mode, diagnostics)
                     }
                 }
             }
@@ -80,6 +70,31 @@ fn resolve_blocks(
                 }
             }
             _ => {}
+        }
+    }
+}
+
+fn render_text(
+    diagram: &mut DiagramBlock,
+    renderer: &impl DiagramRenderer,
+    mode: MermaidMode,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    match renderer.render(&diagram.source, &DiagramRenderOptions { mode }) {
+        Ok(rendered) => diagram.rendered = Some(rendered.lines),
+        Err(error) => {
+            // A failed diagram falls back to its source, never failing the document.
+            let severity = if error.unsupported {
+                Diagnostic::warning
+            } else {
+                Diagnostic::error
+            };
+            diagnostics.push(severity(
+                format!("mermaid: {}", error.message),
+                Some(diagram.range),
+            ));
+            diagram.unsupported = error.unsupported;
+            diagram.error = Some(error.message);
         }
     }
 }

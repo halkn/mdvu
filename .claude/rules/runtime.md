@@ -73,8 +73,7 @@ FSEvents は watch 開始直前の書き込みを起動後に報告すること�
 - tmux 配下では `auto` を off にする。passthrough の可否が外側の端末と tmux のバージョンで決まり、環境変数からは分からない。
 - 画像はエスケープ列なので、`--plain` / `--color never` / `NO_COLOR` では出さない。`auto` は OSC 8 と同じく TTY を要求する。
 - **配置集合が前フレームと同じなら何も送らない。** `draw` は 250ms ごとに回るため、毎回送るとちらつき、数 MB の payload を繰り返し流すことになる。比較は `Rc::ptr_eq` と画面座標で行い、バイト列は比較しない。
-- 消去は Kitty が `a=d,d=A`、iTerm2 は削除コマンドが無いので `Terminal::clear()` で全再描画に落とす。この分岐は `images::erase` の戻り値だけで表す。
-- 画面に収まらない画像は描かない。切り出しには再送が要り、status bar の上に半分描かれる方が実害が大きい。
+- 画像の格納・移動・消去・切り出し（Kitty と iTerm2 の分岐）は `docs/mermaid-image.md` の「pager の kitty 描画」に従う。
 
 ## テスト
 

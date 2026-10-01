@@ -93,6 +93,7 @@ pub enum MermaidMode {
     #[default]
     Unicode,
     Ascii,
+    Image,
     Source,
     Off,
 }
@@ -377,6 +378,15 @@ impl Cli {
         }
     }
 
+    /// The Mermaid mode actually drawn. A picture needs a graphics protocol,
+    /// so `image` becomes Unicode text wherever images are off.
+    pub fn mermaid_mode(&self, images: Option<Protocol>) -> MermaidMode {
+        match (self.mermaid, images) {
+            (MermaidMode::Image, None) => MermaidMode::Unicode,
+            (mode, _) => mode,
+        }
+    }
+
     /// Which glyph set the chrome is drawn with.
     ///
     /// Glyphs are ordinary characters rather than escape sequences, so unlike
@@ -613,6 +623,20 @@ mod tests {
         assert_eq!(
             cli(&["--images", "never", "a.md"]).images(TTY, ColorChoice::Ansi),
             None
+        );
+    }
+
+    #[test]
+    fn mermaid_images_fall_back_to_text_without_a_protocol() {
+        let image = cli(&["--mermaid", "image", "a.md"]);
+        assert_eq!(
+            image.mermaid_mode(Some(Protocol::Kitty)),
+            MermaidMode::Image
+        );
+        assert_eq!(image.mermaid_mode(None), MermaidMode::Unicode);
+        assert_eq!(
+            cli(&["--mermaid", "ascii", "a.md"]).mermaid_mode(None),
+            MermaidMode::Ascii
         );
     }
 
