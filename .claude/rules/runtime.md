@@ -34,7 +34,7 @@ config は **既存フラグの既定値を上書きするだけ**。テーマ�
 
 ## レイアウトの再実行
 
-ドキュメントは起動時に一度だけ parse し、layout はリサイズと reload のときだけ再実行する。frame ごとに layout や diagram 描画を走らせない。reload は起動時とまったく同じ経路（`input::load` → `flavor::parse` → `diagram::resolve` → `layout_document`）を通るので、再読込した文書は開き直した文書と区別できない。
+ドキュメントは起動時に一度だけ parse し、layout はリサイズと reload のときだけ再実行する。frame ごとに layout や diagram 描画を走らせない。reload は起動時とまったく同じ経路（`input::load` → `document::build` → `layout_document`）を通るので、再読込した文書は開き直した文書と区別できない。parse から diagram 描画までの手順は `document::build` にだけ書く。
 
 ## File watch
 

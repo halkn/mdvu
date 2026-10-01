@@ -26,14 +26,11 @@ use crate::pager::images::{self, Placed};
 use crate::pager::state::{OutlineItem, PagerState, rendered_line_for_source, source_line_at};
 use crate::pager::view::{ViewContext, draw, help_rows, widest_line};
 use crate::pager::watch::Watch;
-use crate::source::SourceText;
 
 /// How long a frame waits for input before looping again.
 const POLL: Duration = Duration::from_millis(250);
 
-/// The file to follow, and how to parse it again. Reloading repeats exactly the
-/// steps taken at startup, so a reloaded document is indistinguishable from one
-/// opened fresh.
+/// The file to follow, and how to parse it again.
 pub struct Watched {
     pub path: PathBuf,
     pub flavor: Flavor,
@@ -43,9 +40,7 @@ pub struct Watched {
 impl Watched {
     fn reload(&self) -> Result<Document> {
         let loaded = input::load(&input::InputSource::File(self.path.clone()))?;
-        let mut document = crate::flavor::parse(SourceText::new(loaded.text), self.flavor);
-        crate::diagram::resolve(&mut document, self.mermaid, self.flavor);
-        Ok(document)
+        Ok(crate::document::build(loaded.text, self.flavor, self.mermaid))
     }
 }
 

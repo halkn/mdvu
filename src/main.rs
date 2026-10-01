@@ -2,6 +2,7 @@ mod cli;
 mod config;
 mod diagnostic;
 mod diagram;
+mod document;
 mod error;
 mod flavor;
 mod image;
@@ -17,7 +18,6 @@ use error::{AppError, Result};
 use layout::LayoutOptions;
 use layout::inline::InlineContext;
 use layout::theme::{Theme, Variant};
-use source::SourceText;
 
 /// Used when the terminal size is unavailable, such as when stdout is a pipe.
 const DEFAULT_WIDTH: usize = 80;
@@ -45,8 +45,7 @@ fn run(cli: &Cli) -> Result<()> {
     let images = cli.images(ctx, color);
     let mermaid = cli.mermaid_mode(images);
 
-    let mut document = flavor::parse(SourceText::new(loaded.text), cli.flavor);
-    diagram::resolve(&mut document, mermaid, cli.flavor);
+    let document = document::build(loaded.text, cli.flavor, mermaid);
     let inline = InlineContext {
         mermaid,
         // The root depends on the path alone, so a reload under `--watch` keeps
