@@ -64,7 +64,7 @@ fn run(cli: &Cli) -> Result<()> {
             title: loaded.display_name,
             flavor: flavor_label(cli.flavor),
             width_override: cli.width.map(usize::from),
-            start_line: cli.start_line(),
+            start_line: cli.line,
             watched: watched(cli, &source, mermaid),
         }),
         cli::OutputMode::Stdout => {
@@ -99,11 +99,11 @@ fn watched(
     }
 }
 
-fn flavor_label(flavor: flavor::Flavor) -> &'static str {
-    match flavor {
-        flavor::Flavor::Gfm => "gfm",
-        flavor::Flavor::AzureDevops => "azure-devops",
-    }
+fn flavor_label(flavor: flavor::Flavor) -> String {
+    clap::ValueEnum::to_possible_value(&flavor)
+        .expect("every flavor has a name")
+        .get_name()
+        .to_string()
 }
 
 fn resolve_width(cli: &Cli, ctx: TerminalContext) -> usize {

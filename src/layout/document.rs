@@ -20,6 +20,8 @@ use crate::source::SourceRange;
 
 const TAB_STOP: usize = 4;
 
+const BORDER: &str = "│ ";
+
 pub fn layout_document(
     document: &Document,
     options: LayoutOptions,
@@ -125,7 +127,6 @@ fn details(
     ctx: &InlineContext,
     out: &mut Vec<RenderedLine>,
 ) {
-    const BORDER: &str = "│ ";
     let marker = "▾ ";
     let marker_width = display_width(marker);
     let summary = spans(&d.summary, ctx);
@@ -191,7 +192,7 @@ fn placeholder(p: &PlaceholderBlock, width: usize, out: &mut Vec<RenderedLine>) 
         for text in source.lines() {
             out.push(RenderedLine {
                 spans: vec![
-                    RenderedSpan::new("│ ", StyleRole::CodeBorder),
+                    RenderedSpan::new(BORDER, StyleRole::CodeBorder),
                     RenderedSpan::new(expand_tabs(text), StyleRole::Muted),
                 ],
                 source_range: Some(p.range),
@@ -249,7 +250,7 @@ fn diagram(d: &DiagramBlock, width: usize, ctx: &InlineContext, out: &mut Vec<Re
     for text in body {
         out.push(RenderedLine {
             spans: vec![
-                RenderedSpan::new("│ ", StyleRole::DiagramBorder),
+                RenderedSpan::new(BORDER, StyleRole::DiagramBorder),
                 // Diagram lines keep their leading whitespace and are never
                 // re-wrapped; the pager scrolls horizontally instead.
                 RenderedSpan::new(expand_tabs(&text), StyleRole::Diagram),
@@ -295,7 +296,7 @@ fn error_fallback(d: &DiagramBlock, message: &str, width: usize, out: &mut Vec<R
         &[RenderedSpan::new(message, role)],
         width.saturating_sub(2).max(1),
     ) {
-        let mut all = vec![RenderedSpan::new("│ ", role)];
+        let mut all = vec![RenderedSpan::new(BORDER, role)];
         all.extend(spans);
         out.push(RenderedLine {
             spans: all,
@@ -313,7 +314,7 @@ fn error_fallback(d: &DiagramBlock, message: &str, width: usize, out: &mut Vec<R
     for text in d.source.lines() {
         out.push(RenderedLine {
             spans: vec![
-                RenderedSpan::new("│ ", role),
+                RenderedSpan::new(BORDER, role),
                 RenderedSpan::new(expand_tabs(text), StyleRole::Diagram),
             ],
             source_range: Some(d.range),
@@ -503,7 +504,6 @@ fn quote(
     ctx: &InlineContext,
     out: &mut Vec<RenderedLine>,
 ) {
-    const BORDER: &str = "│ ";
     let role = match q.kind {
         Some(kind) => StyleRole::Alert(kind),
         None => StyleRole::Quote,
@@ -579,7 +579,7 @@ fn code(c: &CodeBlock, ctx: &InlineContext, out: &mut Vec<RenderedLine>) {
             Some(lines) => lines[index].clone(),
             None => vec![RenderedSpan::new(text, StyleRole::Code)],
         };
-        let mut spans = vec![RenderedSpan::new("│ ", StyleRole::CodeBorder)];
+        let mut spans = vec![RenderedSpan::new(BORDER, StyleRole::CodeBorder)];
         spans.extend(content);
         out.push(RenderedLine {
             spans,

@@ -49,7 +49,7 @@ pub struct PagerInput {
     pub inline: InlineContext,
     pub theme: Theme,
     pub title: String,
-    pub flavor: &'static str,
+    pub flavor: String,
     /// Overrides the terminal width when the reader passed `--width`.
     pub width_override: Option<usize>,
     pub start_line: Option<usize>,
@@ -139,7 +139,7 @@ fn event_loop(input: PagerInput) -> Result<()> {
 
         let ctx = ViewContext {
             title: &title,
-            flavor,
+            flavor: &flavor,
             source_lines: document.source.line_count(),
             diagnostics: rendered.diagnostics.len(),
             theme,

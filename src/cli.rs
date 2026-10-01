@@ -42,8 +42,8 @@ pub struct Cli {
     pub width: Option<u16>,
 
     /// Open near the given 1-based source line
-    #[arg(short = 'l', long, value_name = "LINE", value_parser = clap::value_parser!(u64).range(1..))]
-    pub line: Option<u64>,
+    #[arg(short = 'l', long, value_name = "LINE", value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..))]
+    pub line: Option<usize>,
 
     /// Markdown flavor
     #[arg(long, value_enum, default_value_t = Flavor::AzureDevops)]
@@ -343,10 +343,6 @@ impl Cli {
             (MermaidMode::Image, None) => MermaidMode::Unicode,
             (mode, _) => mode,
         }
-    }
-
-    pub fn start_line(&self) -> Option<usize> {
-        self.line.map(|n| n as usize)
     }
 }
 
