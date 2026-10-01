@@ -12,8 +12,8 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
 use crate::diagram::MermaidMode;
-use crate::flavor::Flavor;
 use crate::error::{AppError, Result};
+use crate::flavor::Flavor;
 use crate::input;
 use crate::layout::inline::InlineContext;
 use crate::layout::theme::Theme;
@@ -40,7 +40,11 @@ pub struct Watched {
 impl Watched {
     fn reload(&self) -> Result<Document> {
         let loaded = input::load(&input::InputSource::File(self.path.clone()))?;
-        Ok(crate::document::build(loaded.text, self.flavor, self.mermaid))
+        Ok(crate::document::build(
+            loaded.text,
+            self.flavor,
+            self.mermaid,
+        ))
     }
 }
 

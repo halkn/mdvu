@@ -1,8 +1,8 @@
-use crate::diagram::MermaidMode;
-use crate::flavor::Flavor;
 use crate::diagnostic::Severity;
+use crate::diagram::MermaidMode;
 use crate::diagram::resolve;
 use crate::flavor;
+use crate::flavor::Flavor;
 use crate::markdown::model::{Block, DiagramBlock, Document};
 use crate::source::SourceText;
 
