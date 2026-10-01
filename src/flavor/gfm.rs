@@ -13,21 +13,17 @@ pub fn parse(source: SourceText) -> Document {
 
 fn promote_diagrams(blocks: &mut [Block]) {
     for block in blocks.iter_mut() {
-        match block {
-            Block::Code(c) if c.language.as_deref() == Some("mermaid") => {
-                *block = Block::Diagram(DiagramBlock::new(
-                    "mermaid".to_string(),
-                    c.text.clone(),
-                    c.range,
-                ));
-            }
-            Block::Quote(q) => promote_diagrams(&mut q.blocks),
-            Block::List(l) => {
-                for item in &mut l.items {
-                    promote_diagrams(&mut item.blocks);
-                }
-            }
-            _ => {}
+        if let Block::Code(c) = block
+            && c.language.as_deref() == Some("mermaid")
+        {
+            *block = Block::Diagram(DiagramBlock::new(
+                "mermaid".to_string(),
+                c.text.clone(),
+                c.range,
+            ));
+        }
+        for children in block.children_mut() {
+            promote_diagrams(children);
         }
     }
 }

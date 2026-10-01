@@ -121,6 +121,20 @@ fn fenced_mermaid_works_in_gfm_flavor_too() {
 }
 
 #[test]
+fn fenced_mermaid_in_a_gfm_footnote_becomes_a_diagram() {
+    let doc = gfm("Text[^1]\n\n[^1]: Note\n\n    ```mermaid\n    graph LR\n    ```\n");
+    let Some(Block::Footnote(footnote)) =
+        doc.blocks.iter().find(|b| matches!(b, Block::Footnote(_)))
+    else {
+        panic!("expected a footnote, got {:?}", kinds(&doc));
+    };
+    assert_eq!(
+        footnote.blocks.iter().map(kind).collect::<Vec<_>>(),
+        vec!["paragraph", "diagram"]
+    );
+}
+
+#[test]
 fn video_and_query_containers_become_placeholders() {
     let doc = azure(
         "::: video\n<iframe src=\"x\"></iframe>\n:::\n\n::: query-table 6ff9c8d0-2b6c-4e0e-a4a0-1d1a5b6f0c11\n:::\n",
