@@ -270,7 +270,7 @@ fn local_path(dest: &str) -> Option<PathBuf> {
 
 /// `scheme:` per RFC 3986, requiring at least two characters so a Windows drive
 /// letter is not mistaken for one.
-fn has_scheme(dest: &str) -> bool {
+pub(crate) fn has_scheme(dest: &str) -> bool {
     let Some(colon) = dest.find(':') else {
         return false;
     };
