@@ -36,3 +36,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --all-features
+      - name: Smoke test the binary
+        shell: bash
+        run: |
+          cargo build --locked
+          bash .github/scripts/smoke-test.sh target/debug/mdvu

@@ -86,10 +86,7 @@ jobs:
       - name: Smoke test the binary
         if: matrix.native
         shell: bash
-        run: |
-          bin="target/${{ matrix.target }}/release/mdvu"
-          "$bin" --version
-          printf '# Hello\n\n- item\n' | "$bin" --paging never --color never --width 40 -
+        run: bash .github/scripts/smoke-test.sh "target/${{ matrix.target }}/release/mdvu"
 
       - name: Package
         id: package
