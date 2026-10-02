@@ -13,7 +13,7 @@ mod output;
 mod pager;
 mod source;
 
-use cli::{Cli, TerminalContext};
+use cli::{Cli, Settings, TerminalContext};
 use error::{AppError, Result};
 use layout::LayoutOptions;
 use layout::inline::InlineContext;
@@ -24,7 +24,8 @@ const DEFAULT_WIDTH: usize = 80;
 
 fn main() {
     let cli = Cli::parse_checked();
-    if let Err(err) = run(&cli) {
+    let ctx = TerminalContext::detect();
+    if let Err(err) = cli.resolve(ctx).and_then(|settings| run(&settings, ctx)) {
         if err.is_broken_pipe() {
             return;
         }
@@ -33,50 +34,41 @@ fn main() {
     }
 }
 
-fn run(cli: &Cli) -> Result<()> {
-    let ctx = TerminalContext::detect();
-    let source = cli.input_source(ctx)?;
-    let loaded = input::load(&source)?;
-
-    let mode = cli.output_mode(ctx);
-    let color = cli.color_choice(ctx, mode);
-    let theme = Theme::new(Variant::resolve(cli.theme));
-
-    let images = cli.images(ctx, color);
-    let mermaid = cli.mermaid_mode(images);
-
-    let document = document::build(loaded.text, cli.flavor, mermaid);
+fn run(settings: &Settings, ctx: TerminalContext) -> Result<()> {
+    let loaded = input::load(&settings.input)?;
+    let theme = Theme::new(Variant::resolve(settings.theme));
+    let document = document::build(loaded.text, settings.flavor, settings.mermaid);
     let inline = InlineContext {
-        mermaid,
+        mermaid: settings.mermaid,
         // The root depends on the path alone, so a reload under `--watch` keeps
         // the boundary the document was opened with.
         content_root: loaded.base_dir.as_deref().and_then(image::content_root),
         base_dir: loaded.base_dir,
-        highlight: cli.highlight(color),
-        images: images.map(image::ImageSupport::detect),
-        icons: cli.icons,
+        highlight: settings.highlight,
+        images: settings.images.map(image::ImageSupport::detect),
+        icons: settings.icons,
     };
-    match mode {
+    match settings.mode {
         cli::OutputMode::Pager => pager::run(pager::PagerInput {
             document,
             inline,
             theme,
             title: loaded.display_name,
-            flavor: flavor_label(cli.flavor),
-            width_override: cli.width.map(usize::from),
-            start_line: cli.line,
-            watched: watched(cli, &source, mermaid),
+            flavor: flavor_label(settings.flavor),
+            width_override: settings.width.map(usize::from),
+            start_line: settings.line,
+            watched: watched(settings),
         }),
         cli::OutputMode::Stdout => {
-            let options = LayoutOptions::new(resolve_width(cli, ctx));
+            let options = LayoutOptions::new(resolve_width(settings, ctx));
             let rendered = layout::layout_document(&document, options, &inline);
             let mut out = std::io::stdout().lock();
             output::write_document(
                 &mut out,
                 &rendered,
-                color,
+                settings.color,
                 &theme,
-                cli.hyperlinks(ctx, color),
+                settings.hyperlinks,
             )
         }
     }
@@ -84,16 +76,12 @@ fn run(cli: &Cli) -> Result<()> {
 
 /// The file to follow under `--watch`. Stdin has no path, so it is never
 /// watched; the CLI already rejects that combination.
-fn watched(
-    cli: &Cli,
-    source: &input::InputSource,
-    mermaid: diagram::MermaidMode,
-) -> Option<pager::Watched> {
-    match source {
-        input::InputSource::File(path) if cli.watch => Some(pager::Watched {
+fn watched(settings: &Settings) -> Option<pager::Watched> {
+    match &settings.input {
+        input::InputSource::File(path) if settings.watch => Some(pager::Watched {
             path: path.clone(),
-            flavor: cli.flavor,
-            mermaid,
+            flavor: settings.flavor,
+            mermaid: settings.mermaid,
         }),
         _ => None,
     }
@@ -106,8 +94,8 @@ fn flavor_label(flavor: flavor::Flavor) -> String {
         .to_string()
 }
 
-fn resolve_width(cli: &Cli, ctx: TerminalContext) -> usize {
-    if let Some(width) = cli.width {
+fn resolve_width(settings: &Settings, ctx: TerminalContext) -> usize {
+    if let Some(width) = settings.width {
         return width as usize;
     }
     if ctx.stdout_is_tty

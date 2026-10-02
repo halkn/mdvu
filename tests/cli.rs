@@ -16,7 +16,7 @@ fn renders_a_file_argument() {
     std::fs::write(&path, "# Hello\n").unwrap();
 
     mdvu()
-        .arg("--no-pager")
+        .args(["--paging", "never"])
         .arg(&path)
         .assert()
         .success()
@@ -26,7 +26,7 @@ fn renders_a_file_argument() {
 #[test]
 fn dash_reads_stdin() {
     mdvu()
-        .args(["--no-pager", "-"])
+        .args(["--paging", "never", "-"])
         .write_stdin("# From stdin\n")
         .assert()
         .success()
@@ -36,7 +36,7 @@ fn dash_reads_stdin() {
 #[test]
 fn omitted_file_reads_piped_stdin() {
     mdvu()
-        .arg("--no-pager")
+        .args(["--paging", "never"])
         .write_stdin("# Piped\n")
         .assert()
         .success()
@@ -68,9 +68,12 @@ fn a_config_file_supplies_defaults_that_flags_override() {
             .unwrap_or(0)
     };
 
-    assert!(widest(&["--no-pager", "-"]) <= 30, "config width applies");
+    assert!(
+        widest(&["--paging", "never", "-"]) <= 30,
+        "config width applies"
+    );
     // An explicit flag wins over the file.
-    assert!(widest(&["--no-pager", "--width", "60", "-"]) > 30);
+    assert!(widest(&["--paging", "never", "--width", "60", "-"]) > 30);
 }
 
 #[test]
@@ -81,7 +84,7 @@ fn an_invalid_config_file_is_a_usage_error() {
 
     mdvu()
         .env("MDVU_CONFIG", &config)
-        .args(["--no-pager", "-"])
+        .args(["--paging", "never", "-"])
         .write_stdin("# Hi\n")
         .assert()
         .code(2)
@@ -92,7 +95,7 @@ fn an_invalid_config_file_is_a_usage_error() {
 fn an_empty_mdvu_config_disables_the_file() {
     mdvu()
         .env("MDVU_CONFIG", "")
-        .args(["--no-pager", "-"])
+        .args(["--paging", "never", "-"])
         .write_stdin("# Hi\n")
         .assert()
         .success();
@@ -102,7 +105,8 @@ fn an_empty_mdvu_config_disables_the_file() {
 fn hyperlinks_always_emits_osc_8_for_http_links() {
     mdvu()
         .args([
-            "--no-pager",
+            "--paging",
+            "never",
             "--color",
             "always",
             "--hyperlinks",
@@ -122,7 +126,15 @@ fn hyperlinks_always_emits_osc_8_for_http_links() {
 #[test]
 fn plain_output_stays_free_of_escapes_even_with_hyperlinks_always() {
     mdvu()
-        .args(["--no-pager", "--plain", "--hyperlinks", "always", "-"])
+        .args([
+            "--paging",
+            "never",
+            "--color",
+            "never",
+            "--hyperlinks",
+            "always",
+            "-",
+        ])
         .write_stdin("[docs](https://example.com/x)\n")
         .assert()
         .success()
@@ -147,11 +159,11 @@ fn watch_requires_a_file_and_the_pager() {
 
     // Rendering once to stdout has nothing to re-render.
     mdvu()
-        .args(["--watch", "--no-pager"])
+        .args(["--watch", "--paging", "never"])
         .arg(&path)
         .assert()
         .code(2)
-        .stderr(predicate::str::contains("--no-pager"));
+        .stderr(predicate::str::contains("--paging never"));
 }
 
 #[test]
@@ -159,7 +171,7 @@ fn directory_input_fails_with_exit_1() {
     let dir = tempfile::tempdir().unwrap();
 
     mdvu()
-        .arg("--no-pager")
+        .args(["--paging", "never"])
         .arg(dir.path())
         .assert()
         .code(1)
@@ -171,7 +183,7 @@ fn missing_file_fails_with_exit_1() {
     let dir = tempfile::tempdir().unwrap();
 
     mdvu()
-        .arg("--no-pager")
+        .args(["--paging", "never"])
         .arg(dir.path().join("absent.md"))
         .assert()
         .code(1);
@@ -184,7 +196,7 @@ fn non_utf8_input_fails_with_exit_1() {
     std::fs::write(&path, [b'#', b' ', 0xFF, b'\n']).unwrap();
 
     mdvu()
-        .arg("--no-pager")
+        .args(["--paging", "never"])
         .arg(&path)
         .assert()
         .code(1)
@@ -192,18 +204,16 @@ fn non_utf8_input_fails_with_exit_1() {
 }
 
 #[test]
-fn conflicting_pager_flags_are_a_usage_error() {
-    mdvu()
-        .args(["--pager", "--no-pager", "-"])
-        .write_stdin("x\n")
-        .assert()
-        .code(2);
+fn removed_pager_and_plain_flags_are_usage_errors() {
+    for flag in ["--pager", "-p", "--no-pager", "--plain"] {
+        mdvu().args([flag, "-"]).write_stdin("x\n").assert().code(2);
+    }
 }
 
 #[test]
-fn plain_with_color_always_is_a_usage_error() {
+fn unknown_paging_value_is_a_usage_error() {
     mdvu()
-        .args(["--plain", "--color", "always", "-"])
+        .args(["--paging", "sometimes", "-"])
         .write_stdin("x\n")
         .assert()
         .code(2);
@@ -257,13 +267,7 @@ const WITH_IMAGE: &str = "tests/fixtures/gfm/showcase.md";
 fn a_named_protocol_draws_a_local_image() {
     let out = mdvu()
         .args([
-            "--no-pager",
-            "--color",
-            "always",
-            "--images",
-            "kitty",
-            "--flavor",
-            "gfm",
+            "--paging", "never", "--color", "always", "--images", "kitty", "--flavor", "gfm",
             WITH_IMAGE,
         ])
         .assert()
@@ -281,13 +285,7 @@ fn a_named_protocol_draws_a_local_image() {
 
     let iterm = mdvu()
         .args([
-            "--no-pager",
-            "--color",
-            "always",
-            "--images",
-            "iterm2",
-            "--flavor",
-            "gfm",
+            "--paging", "never", "--color", "always", "--images", "iterm2", "--flavor", "gfm",
             WITH_IMAGE,
         ])
         .assert()
@@ -305,12 +303,7 @@ fn a_named_protocol_draws_a_local_image() {
 fn images_are_off_when_stdout_is_not_a_terminal() {
     mdvu()
         .args([
-            "--no-pager",
-            "--color",
-            "always",
-            "--flavor",
-            "gfm",
-            WITH_IMAGE,
+            "--paging", "never", "--color", "always", "--flavor", "gfm", WITH_IMAGE,
         ])
         .assert()
         .success()
@@ -322,12 +315,7 @@ fn images_are_off_when_stdout_is_not_a_terminal() {
 fn plain_output_never_carries_an_image() {
     let out = mdvu()
         .args([
-            "--no-pager",
-            "--plain",
-            "--images",
-            "kitty",
-            "--flavor",
-            "gfm",
+            "--paging", "never", "--color", "never", "--images", "kitty", "--flavor", "gfm",
             WITH_IMAGE,
         ])
         .assert()
@@ -350,7 +338,9 @@ fn an_image_outside_the_document_directory_keeps_its_placeholder() {
     std::fs::write(&doc, "![a](../outside.png)\n").unwrap();
 
     let out = mdvu()
-        .args(["--no-pager", "--color", "always", "--images", "kitty"])
+        .args([
+            "--paging", "never", "--color", "always", "--images", "kitty",
+        ])
         .arg(&doc)
         .assert()
         .success()
@@ -391,7 +381,9 @@ fn a_page_reads_attachments_from_the_repository_root() {
     .unwrap();
 
     let out = mdvu()
-        .args(["--no-pager", "--color", "always", "--images", "kitty"])
+        .args([
+            "--paging", "never", "--color", "always", "--images", "kitty",
+        ])
         .arg(&doc)
         .assert()
         .success()
@@ -409,7 +401,9 @@ fn a_page_reads_attachments_from_the_repository_root() {
 #[test]
 fn a_document_on_stdin_has_no_directory_to_read_images_from() {
     let out = mdvu()
-        .args(["--no-pager", "--color", "always", "--images", "kitty", "-"])
+        .args([
+            "--paging", "never", "--color", "always", "--images", "kitty", "-",
+        ])
         .write_stdin("![a](tests/fixtures/gfm/.attachments/architecture.png)\n")
         .assert()
         .success()

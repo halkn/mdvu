@@ -4,7 +4,7 @@
 
 ## 有効になる条件
 
-- `--mermaid image` は画像を描ける端末でだけ有効にする。判定は `Cli::mermaid_mode` の 1 箇所で、画像が off（`--images never`・`--plain`・パイプ・未対応の端末）なら `unicode` として resolve する。
+- `--mermaid image` は画像を描ける端末でだけ有効にする。判定は `Cli::mermaid_mode` の 1 箇所で、画像が off（`--images never`・`--color never`・パイプ・未対応の端末）なら `unicode` として resolve する。
 - PNG 化に失敗した diagram はテキスト描画へ落とし、エラー報告はテキスト側の経路に任せる。
 - layout は PNG を `image::from_png` で `Placement` にし、単独画像の段落と同じ予約行にする。
 

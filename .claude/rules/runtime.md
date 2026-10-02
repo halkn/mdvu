@@ -14,14 +14,16 @@ paths:
 
 `0` 成功 / `1` 入力・デコード・端末・出力の致命的エラー / `2` usage error。
 
-- `--plain` と **明示指定された** `--color always` は usage error。判定には clap の `ValueSource` を使い、既定値との衝突は起こさない。`--plain --color never` は矛盾しないので受理する。
-- `--watch` と stdin / `--no-pager` の併用は usage error。
+- `--watch` と stdin / `--paging never` の併用は usage error。
+- 出力先は `--paging <auto|always|never>` の 1 フラグで選ぶ。2 つの bool フラグに分けると、その組み合わせを usage error として別途検査する必要が出る。値の型は `--color` / `--hyperlinks` と同じ `When` を使う。
+- `--color never` の別名は持たない。別名を置くと、明示された `--color always` との矛盾を `ValueSource` で検出する特別扱いが要る。
 - diagram の描画失敗は usage error でも fatal でもない。
 
 ## Config file のスコープ
 
 config は **既存フラグの既定値を上書きするだけ**。テーマ色や keymap まで開かない。設定を増やすと意味論が増え、CLI フラグの契約と二重管理になる。
 
+- `ValueEnum` のフラグに対応するキーは `config.rs` の `flag_keys!` に 1 行で足す。`Config`・TOML の生の構造体・解析・`Cli` への適用がそこから生成されるので、どれかを書き忘れることがない。キー名は `Cli` のフィールド名（= clap の引数 id）と同じにする。
 - 値の解析は clap の `ValueEnum::from_str` を使う。serde derive で書き直すと、受理される綴りが `--help` と二重管理になる。
 - `serde(deny_unknown_fields)` を付ける。typo が黙って無効になる方が実害が大きい。未知のキー・不正な値は usage error。
 - 探索順は `MDVU_CONFIG` → `$XDG_CONFIG_HOME/mdvu/config.toml` → `~/.config/mdvu/config.toml`。macOS でも `~/.config` に統一し、`dirs` 系の依存を足さない。
@@ -71,7 +73,7 @@ FSEvents は watch 開始直前の書き込みを起動後に報告すること�
 
 - 端末に能力を問い合わせない。判定は環境変数のみ（`TERM` / `TERM_PROGRAM` / `KITTY_WINDOW_ID` / `KONSOLE_VERSION`）。DA1 や kitty query は応答待ちが要るので使わない。`--images <protocol>` が唯一の強制手段。
 - tmux 配下では `auto` を off にする。passthrough の可否が外側の端末と tmux のバージョンで決まり、環境変数からは分からない。
-- 画像はエスケープ列なので、`--plain` / `--color never` / `NO_COLOR` では出さない。`auto` は OSC 8 と同じく TTY を要求する。
+- 画像はエスケープ列なので、`--color never` / `NO_COLOR` では出さない。`auto` は OSC 8 と同じく TTY を要求する。
 - **配置集合が前フレームと同じなら何も送らない。** `draw` は 250ms ごとに回るため、毎回送るとちらつき、数 MB の payload を繰り返し流すことになる。比較は `Rc::ptr_eq` と画面座標で行い、バイト列は比較しない。
 - 画像の格納・移動・消去・切り出し（Kitty と iTerm2 の分岐）は `docs/mermaid-image.md` の「pager の kitty 描画」に従う。
 

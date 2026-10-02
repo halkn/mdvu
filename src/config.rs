@@ -9,45 +9,78 @@
 
 use std::path::PathBuf;
 
-use clap::ValueEnum;
+use clap::parser::ValueSource;
+use clap::{ArgMatches, ValueEnum};
 use serde::Deserialize;
 
-use crate::cli::{ColorWhen, HighlightWhen, HyperlinkWhen, ImagesWhen};
+use crate::cli::{Cli, HighlightWhen, ImagesWhen, When};
 use crate::diagram::MermaidMode;
 use crate::flavor::Flavor;
 use crate::layout::icons::IconSet;
 use crate::layout::theme::ThemeChoice;
 
-/// Overrides an absent flag would otherwise take from its built-in default.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct Config {
-    pub flavor: Option<Flavor>,
-    pub mermaid: Option<MermaidMode>,
-    pub theme: Option<ThemeChoice>,
-    pub color: Option<ColorWhen>,
-    pub hyperlinks: Option<HyperlinkWhen>,
-    pub highlight: Option<HighlightWhen>,
-    pub images: Option<ImagesWhen>,
-    pub icons: Option<IconSet>,
-    pub width: Option<u16>,
-    pub watch: Option<bool>,
+/// Each key that mirrors a `ValueEnum` flag is listed once, and its `Config`
+/// field, its raw TOML field, its parsing and its application to `Cli` are all
+/// generated from that line, so adding a key cannot miss one of them. The key
+/// names a `Cli` field, so a misspelling fails to compile, and the derive makes
+/// that field name the clap argument id.
+macro_rules! flag_keys {
+    ($($key:ident: $ty:ty),* $(,)?) => {
+        /// Overrides an absent flag would otherwise take from its built-in default.
+        #[derive(Debug, Default, Clone, PartialEq, Eq)]
+        pub struct Config {
+            $(pub $key: Option<$ty>,)*
+            pub width: Option<u16>,
+            pub watch: Option<bool>,
+        }
+
+        /// The file as written. Kept separate from `Config` so every value is
+        /// validated on the way out, with the same wording the CLI uses.
+        #[derive(Debug, Default, Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Raw {
+            $($key: Option<String>,)*
+            width: Option<i64>,
+            watch: Option<bool>,
+        }
+
+        pub fn parse(text: &str) -> Result<Config, String> {
+            let raw: Raw = toml::from_str(text).map_err(|err| one_line(&err.to_string()))?;
+            Ok(Config {
+                $($key: value(raw.$key.as_deref(), stringify!($key))?,)*
+                width: width(raw.width)?,
+                watch: raw.watch,
+            })
+        }
+
+        impl Config {
+            /// Set every flag the command line left at its built-in default.
+            /// `width` and `watch` are not flags with a default value, so the
+            /// caller applies them.
+            pub fn apply_defaults(&self, cli: &mut Cli, matches: &ArgMatches) {
+                let defaulted =
+                    |id: &str| matches.value_source(id) == Some(ValueSource::DefaultValue);
+                $(
+                    if let Some(value) = self.$key
+                        && defaulted(stringify!($key))
+                    {
+                        cli.$key = value;
+                    }
+                )*
+            }
+        }
+    };
 }
 
-/// The file as written. Kept separate from `Config` so every value is validated
-/// on the way out, with the same wording the CLI uses.
-#[derive(Debug, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Raw {
-    flavor: Option<String>,
-    mermaid: Option<String>,
-    theme: Option<String>,
-    color: Option<String>,
-    hyperlinks: Option<String>,
-    highlight: Option<String>,
-    images: Option<String>,
-    icons: Option<String>,
-    width: Option<i64>,
-    watch: Option<bool>,
+flag_keys! {
+    flavor: Flavor,
+    mermaid: MermaidMode,
+    theme: ThemeChoice,
+    color: When,
+    hyperlinks: When,
+    highlight: HighlightWhen,
+    images: ImagesWhen,
+    icons: IconSet,
 }
 
 /// Read the configuration file, if there is one.
@@ -87,22 +120,6 @@ fn path() -> Option<PathBuf> {
         None => PathBuf::from(std::env::var_os("HOME")?).join(".config"),
     };
     Some(base.join("mdvu").join("config.toml"))
-}
-
-pub fn parse(text: &str) -> Result<Config, String> {
-    let raw: Raw = toml::from_str(text).map_err(|err| one_line(&err.to_string()))?;
-    Ok(Config {
-        flavor: value(raw.flavor.as_deref(), "flavor")?,
-        mermaid: value(raw.mermaid.as_deref(), "mermaid")?,
-        theme: value(raw.theme.as_deref(), "theme")?,
-        color: value(raw.color.as_deref(), "color")?,
-        hyperlinks: value(raw.hyperlinks.as_deref(), "hyperlinks")?,
-        highlight: value(raw.highlight.as_deref(), "highlight")?,
-        images: value(raw.images.as_deref(), "images")?,
-        icons: value(raw.icons.as_deref(), "icons")?,
-        width: width(raw.width)?,
-        watch: raw.watch,
-    })
 }
 
 fn value<T: ValueEnum>(raw: Option<&str>, key: &str) -> Result<Option<T>, String> {
@@ -189,8 +206,8 @@ mod tests {
                 flavor: Some(Flavor::Gfm),
                 mermaid: Some(MermaidMode::Ascii),
                 theme: Some(ThemeChoice::Light),
-                color: Some(ColorWhen::Always),
-                hyperlinks: Some(HyperlinkWhen::Never),
+                color: Some(When::Always),
+                hyperlinks: Some(When::Never),
                 highlight: Some(HighlightWhen::Never),
                 images: Some(ImagesWhen::Kitty),
                 icons: Some(IconSet::Nerd),

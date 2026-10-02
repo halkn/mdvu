@@ -67,19 +67,18 @@ mdvu [OPTIONS] [FILE]
 `FILE` is a Markdown file, `-` for stdin, or omitted when stdin is a pipe.
 
 ```console
-mdvu README.md                       # interactive pager
-mdvu docs/architecture.md --line 143 # open near a source line
-mdvu --watch notes.md                # follow the file while an agent edits it
+mdvu README.md                           # interactive pager
+mdvu docs/architecture.md --line 143     # open near a source line
+mdvu --watch notes.md                    # follow the file while an agent edits it
 git show HEAD:docs/design.md | mdvu -
-mdvu --no-pager --plain doc.md       # unstyled text to stdout
+mdvu --paging never --color never doc.md # unstyled text to stdout
 ```
 
 ### Options
 
 | Option | Description |
 |:-------|:------------|
-| `-p, --pager` | Force the interactive pager |
-| `--no-pager` | Render to stdout without entering the alternate screen |
+| `--paging <WHEN>` | Interactive pager: `auto`, `always`, `never` (default: `auto`) |
 | `-w, --width <COLUMNS>` | Override the rendering width |
 | `-l, --line <LINE>` | Open near the given 1-based source line |
 | `--flavor <FLAVOR>` | `gfm` or `azure-devops` (default: `azure-devops`) |
@@ -88,13 +87,13 @@ mdvu --no-pager --plain doc.md       # unstyled text to stdout
 | `--color <WHEN>` | `auto`, `always`, `never` (default: `auto`) |
 | `--hyperlinks <WHEN>` | OSC 8 links in stdout output: `auto`, `always`, `never` (default: `auto`) |
 | `--highlight <WHEN>` | Syntax highlighting for code blocks: `auto`, `never` (default: `auto`) |
-| `--images <WHEN>` | Inline images: `auto`, `kitty`, `iterm2`, `never` (default: `auto`) |
+| `--images <MODE>` | Inline images: `auto`, `kitty`, `iterm2`, `never` (default: `auto`) |
 | `--icons <SET>` | Glyphs for alerts, code fences and placeholders: `unicode`, `nerd` (default: `unicode`) |
 | `--watch` | Re-render when the file changes on disk (pager only) |
-| `--plain` | Alias for `--color never` |
 
-Without `--pager` or `--no-pager`, `mdvu` opens the pager when stdout is a
-terminal and writes to stdout otherwise. `--color auto` honours `NO_COLOR` and
+`--paging auto` opens the pager when stdout is a terminal and writes to stdout
+otherwise; `never` always writes to stdout, and `always` opens the pager even
+when stdout is not a terminal. `--color auto` honours `NO_COLOR` and
 disables ANSI when stdout is not a terminal. `--theme auto` uses the `COLORFGBG`
 hint when present and falls back to dark; it never issues a blocking terminal
 query.
@@ -103,7 +102,7 @@ query.
 hyperlinks, so a supporting terminal can open them. Other destinations —
 relative paths, attachments, anchors and other schemes — are shown but never
 linked, and `mdvu` itself never opens anything. Hyperlinks are escape sequences,
-so `--plain` and `--color never` suppress them. `auto` emits them only when
+so `--color never` suppresses them. `auto` emits them only when
 stdout is a terminal; use `always` for a captured preview such as `fzf`.
 
 Underline means "the destination is a real URL". Link labels are coloured, but
@@ -121,7 +120,7 @@ your editor in another window — and re-renders on every save. The reading
 position is kept: the source line at the top of the viewport stays there. A save
 that is briefly unreadable is reported in the status bar and leaves the previous
 rendering on screen. Watching needs a file and the pager, so it cannot be
-combined with stdin or `--no-pager`.
+combined with stdin or `--paging never`.
 
 Exit codes: `0` success, `1` a fatal input, decode, terminal or output error,
 `2` a usage error. A Mermaid diagram that fails to render is never fatal.
@@ -198,7 +197,7 @@ viewport.
 
 ```console
 fd --type f --extension md |
-  fzf --preview 'mdvu --no-pager --color always --width "$FZF_PREVIEW_COLUMNS" {}'
+  fzf --preview 'mdvu --paging never --color always --width "$FZF_PREVIEW_COLUMNS" {}'
 ```
 
 `--color always` is required: `fzf` captures the preview, so `auto` would
@@ -208,7 +207,7 @@ correctly decide the output is not a terminal and drop the styling.
 
 ```console
 git diff --name-only --diff-filter=ACMR -- '*.md' |
-  fzf --preview 'mdvu --no-pager --color always --width "$FZF_PREVIEW_COLUMNS" {}'
+  fzf --preview 'mdvu --paging never --color always --width "$FZF_PREVIEW_COLUMNS" {}'
 ```
 
 `mdvu` renders the document as it now stands. Reading the diff itself is the job
@@ -227,7 +226,7 @@ placeholder everywhere else; see [Images](#images).
 A quote that opens with `[!NOTE]`, `[!TIP]`, `[!IMPORTANT]`, `[!WARNING]` or
 `[!CAUTION]` is drawn as a labelled box in a colour matching its kind. The label
 is a word, so no font beyond the box drawing characters is assumed and the kind
-is still readable under `--plain`; `--icons nerd` puts a glyph in front of it.
+is still readable under `--color never`; `--icons nerd` puts a glyph in front of it.
 Alerts work in both flavors — Azure DevOps Wiki uses the same syntax — and an
 unrecognised kind such as `[!FOO]` stays an ordinary quote with its marker
 intact.
@@ -242,7 +241,7 @@ truncated.
 Fenced code blocks with a language are syntax highlighted. Tokens are classified
 by [`syntect`](https://docs.rs/syntect/) and coloured from the same 16-colour
 theme as the rest of the document, so both themes and every terminal work the
-same way. An unknown language falls back to a uniform colour, and `--plain`
+same way. An unknown language falls back to a uniform colour, and `--color never`
 switches highlighting off entirely. Code blocks are not re-wrapped; scroll them
 horizontally instead. Tabs expand to four-column tab stops.
 
@@ -298,7 +297,7 @@ exits `0`.
 `--mermaid image` lays the diagram out as SVG with `merman` and rasterises it
 to PNG in process with `resvg`, then draws it like an [image](#images). It
 needs a terminal where images are on; everywhere else — `--images never`,
-`--plain`, a pipe under `--images auto`, an unrecognised terminal — it is the
+`--color never`, a pipe under `--images auto`, an unrecognised terminal — it is the
 same as `unicode`. Families without a text renderer, such as `stateDiagram-v2`,
 `pie` and `gantt`, are drawn too, and a diagram that cannot be drawn as a
 picture falls back to text. The picture is sized as a browser would show it —
@@ -331,7 +330,7 @@ supports, since that would mean writing to the tty and waiting for an answer.
 kitty, Ghostty, WezTerm and Konsole get the kitty protocol; iTerm2 gets its own.
 Inside `tmux`, `auto` stays off, because passthrough depends on the outer
 terminal and the tmux version; `--images kitty` forces it. Images are escape
-sequences, so `--plain`, `--color never` and `NO_COLOR` suppress them, and
+sequences, so `--color never` and `NO_COLOR` suppress them, and
 `auto` requires stdout to be a terminal.
 
 Which files may be read is deliberately narrow. `mdvu` opens nothing else in a
@@ -376,7 +375,7 @@ it on per run with `--icons nerd`, or once with `icons = "nerd"` in the
 configuration file.
 
 Glyphs are ordinary characters rather than escape sequences, so unlike images
-and hyperlinks they are unaffected by `--plain`, `--color never` and `NO_COLOR`.
+and hyperlinks they are unaffected by `--color never` and `NO_COLOR`.
 A terminal without a Nerd Font shows tofu in their place; the columns still line
 up, because each glyph is measured as one display column.
 
