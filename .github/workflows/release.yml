@@ -89,7 +89,7 @@ jobs:
         run: |
           bin="target/${{ matrix.target }}/release/mdvu"
           "$bin" --version
-          printf '# Hello\n\n- item\n' | "$bin" --no-pager --plain --width 40 -
+          printf '# Hello\n\n- item\n' | "$bin" --paging never --color never --width 40 -
 
       - name: Package
         id: package
