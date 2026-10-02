@@ -12,10 +12,22 @@ mod raster;
 #[cfg(test)]
 mod tests;
 
-use crate::cli::{Flavor, MermaidMode};
+use clap::ValueEnum;
+
 use crate::diagnostic::Diagnostic;
+use crate::flavor::Flavor;
 use crate::markdown::model::{Block, DiagramBlock, Document};
 use mermaid::{DiagramRenderOptions, DiagramRenderer, MermanRenderer};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, ValueEnum)]
+pub enum MermaidMode {
+    #[default]
+    Unicode,
+    Ascii,
+    Image,
+    Source,
+    Off,
+}
 
 pub fn resolve(document: &mut Document, mode: MermaidMode, flavor: Flavor) {
     let renderer = MermanRenderer;
@@ -38,38 +50,28 @@ fn resolve_blocks(
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     for block in blocks.iter_mut() {
-        match block {
-            Block::Diagram(diagram) => {
-                if flavor == Flavor::AzureDevops {
-                    diagram.warnings = azure_compat::warnings(&diagram.source);
-                    for warning in &diagram.warnings {
-                        diagnostics.push(Diagnostic::warning(warning.clone(), Some(diagram.range)));
-                    }
-                }
-                match mode {
-                    // Source and off never invoke the renderer.
-                    MermaidMode::Source | MermaidMode::Off => {}
-                    MermaidMode::Image => match renderer.render_png(&diagram.source) {
-                        Ok(png) => diagram.png = Some(png),
-                        // Text may still draw it, and reports the error if not.
-                        Err(_) => render_text(diagram, renderer, MermaidMode::Unicode, diagnostics),
-                    },
-                    MermaidMode::Unicode | MermaidMode::Ascii => {
-                        render_text(diagram, renderer, mode, diagnostics)
-                    }
+        if let Block::Diagram(diagram) = block {
+            if flavor == Flavor::AzureDevops {
+                diagram.warnings = azure_compat::warnings(&diagram.source);
+                for warning in &diagram.warnings {
+                    diagnostics.push(Diagnostic::warning(warning.clone(), Some(diagram.range)));
                 }
             }
-            Block::Quote(q) => resolve_blocks(&mut q.blocks, renderer, mode, flavor, diagnostics),
-            Block::Details(d) => resolve_blocks(&mut d.blocks, renderer, mode, flavor, diagnostics),
-            Block::Footnote(f) => {
-                resolve_blocks(&mut f.blocks, renderer, mode, flavor, diagnostics)
-            }
-            Block::List(l) => {
-                for item in &mut l.items {
-                    resolve_blocks(&mut item.blocks, renderer, mode, flavor, diagnostics);
+            match mode {
+                // Source and off never invoke the renderer.
+                MermaidMode::Source | MermaidMode::Off => {}
+                MermaidMode::Image => match renderer.render_png(&diagram.source) {
+                    Ok(png) => diagram.png = Some(png),
+                    // Text may still draw it, and reports the error if not.
+                    Err(_) => render_text(diagram, renderer, MermaidMode::Unicode, diagnostics),
+                },
+                MermaidMode::Unicode | MermaidMode::Ascii => {
+                    render_text(diagram, renderer, mode, diagnostics)
                 }
             }
-            _ => {}
+        }
+        for children in block.children_mut() {
+            resolve_blocks(children, renderer, mode, flavor, diagnostics);
         }
     }
 }

@@ -4,8 +4,13 @@ use std::path::PathBuf;
 use clap::builder::styling::{AnsiColor, Styles};
 use clap::{ArgMatches, CommandFactory, FromArgMatches, Parser, ValueEnum, parser::ValueSource};
 
+use crate::diagram::MermaidMode;
+use crate::flavor::Flavor;
 use crate::image::Protocol;
+use crate::input::InputSource;
 use crate::layout::icons::IconSet;
+use crate::layout::theme::ThemeChoice;
+use crate::output::ColorChoice;
 
 const STYLES: Styles = Styles::styled()
     .header(AnsiColor::Green.on_default().bold())
@@ -37,8 +42,8 @@ pub struct Cli {
     pub width: Option<u16>,
 
     /// Open near the given 1-based source line
-    #[arg(short = 'l', long, value_name = "LINE", value_parser = clap::value_parser!(u64).range(1..))]
-    pub line: Option<u64>,
+    #[arg(short = 'l', long, value_name = "LINE", value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..))]
+    pub line: Option<usize>,
 
     /// Markdown flavor
     #[arg(long, value_enum, default_value_t = Flavor::AzureDevops)]
@@ -49,8 +54,8 @@ pub struct Cli {
     pub mermaid: MermaidMode,
 
     /// Theme
-    #[arg(long, value_enum, default_value_t = Theme::Auto)]
-    pub theme: Theme,
+    #[arg(long, value_enum, default_value_t = ThemeChoice::Auto)]
+    pub theme: ThemeChoice,
 
     /// ANSI color policy
     #[arg(long, value_enum, default_value_t = ColorWhen::Auto, value_name = "WHEN")]
@@ -69,8 +74,8 @@ pub struct Cli {
     pub images: ImagesWhen,
 
     /// Glyphs used for alerts, code fences and placeholders
-    #[arg(long, value_enum, default_value_t = IconsSet::Unicode, value_name = "SET")]
-    pub icons: IconsSet,
+    #[arg(long, value_enum, default_value_t = IconSet::Unicode, value_name = "SET")]
+    pub icons: IconSet,
 
     /// Re-render the file when it changes on disk
     #[arg(long)]
@@ -79,30 +84,6 @@ pub struct Cli {
     /// Alias for --color never
     #[arg(long)]
     pub plain: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum Flavor {
-    Gfm,
-    #[value(name = "azure-devops")]
-    AzureDevops,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, ValueEnum)]
-pub enum MermaidMode {
-    #[default]
-    Unicode,
-    Ascii,
-    Image,
-    Source,
-    Off,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum Theme {
-    Auto,
-    Dark,
-    Light,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -135,34 +116,11 @@ pub enum ImagesWhen {
     Never,
 }
 
-/// `nerd` is opt-in and never detected: whether a Nerd Font is installed is a
-/// property of the terminal's font, and asking the terminal would mean writing
-/// to the tty and waiting for an answer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum IconsSet {
-    Unicode,
-    Nerd,
-}
-
-/// Where the Markdown source comes from.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum InputSource {
-    File(PathBuf),
-    Stdin,
-}
-
 /// Which backend renders the document.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputMode {
     Pager,
     Stdout,
-}
-
-/// Whether the stdout backend emits ANSI escapes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ColorChoice {
-    Ansi,
-    Plain,
 }
 
 /// Terminal facts that mode resolution depends on. Kept explicit so resolution
@@ -386,22 +344,6 @@ impl Cli {
             (mode, _) => mode,
         }
     }
-
-    /// Which glyph set the chrome is drawn with.
-    ///
-    /// Glyphs are ordinary characters rather than escape sequences, so unlike
-    /// images and hyperlinks they are not tied to the colour policy: `--plain`
-    /// still shows them.
-    pub fn icons(&self) -> IconSet {
-        match self.icons {
-            IconsSet::Unicode => IconSet::Unicode,
-            IconsSet::Nerd => IconSet::Nerd,
-        }
-    }
-
-    pub fn start_line(&self) -> Option<usize> {
-        self.line.map(|n| n as usize)
-    }
 }
 
 #[cfg(test)]
@@ -442,7 +384,7 @@ mod tests {
         let cli = cli(&["a.md"]);
         assert_eq!(cli.flavor, Flavor::AzureDevops);
         assert_eq!(cli.mermaid, MermaidMode::Unicode);
-        assert_eq!(cli.theme, Theme::Auto);
+        assert_eq!(cli.theme, ThemeChoice::Auto);
         assert_eq!(cli.color, ColorWhen::Auto);
     }
 
@@ -516,24 +458,24 @@ mod tests {
         let config = Config {
             flavor: Some(Flavor::Gfm),
             mermaid: Some(MermaidMode::Ascii),
-            theme: Some(Theme::Light),
+            theme: Some(ThemeChoice::Light),
             color: Some(ColorWhen::Never),
             hyperlinks: Some(HyperlinkWhen::Always),
             highlight: Some(HighlightWhen::Never),
             images: Some(ImagesWhen::Never),
-            icons: Some(IconsSet::Nerd),
+            icons: Some(IconSet::Nerd),
             width: Some(100),
             watch: None,
         };
         let cli = configured(&["a.md"], &config);
         assert_eq!(cli.flavor, Flavor::Gfm);
         assert_eq!(cli.mermaid, MermaidMode::Ascii);
-        assert_eq!(cli.theme, Theme::Light);
+        assert_eq!(cli.theme, ThemeChoice::Light);
         assert_eq!(cli.color, ColorWhen::Never);
         assert_eq!(cli.hyperlinks, HyperlinkWhen::Always);
         assert_eq!(cli.highlight, HighlightWhen::Never);
         assert_eq!(cli.images, ImagesWhen::Never);
-        assert_eq!(cli.icons, IconsSet::Nerd);
+        assert_eq!(cli.icons, IconSet::Nerd);
         assert_eq!(cli.width, Some(100));
     }
 
@@ -541,14 +483,14 @@ mod tests {
     /// can still ask for the plain set on a machine without the font.
     #[test]
     fn icons_default_to_unicode_and_are_chosen_explicitly() {
-        assert_eq!(cli(&["a.md"]).icons(), IconSet::Unicode);
-        assert_eq!(cli(&["--icons", "nerd", "a.md"]).icons(), IconSet::Nerd);
+        assert_eq!(cli(&["a.md"]).icons, IconSet::Unicode);
+        assert_eq!(cli(&["--icons", "nerd", "a.md"]).icons, IconSet::Nerd);
         let config = Config {
-            icons: Some(IconsSet::Nerd),
+            icons: Some(IconSet::Nerd),
             ..Config::default()
         };
         assert_eq!(
-            configured(&["--icons", "unicode", "a.md"], &config).icons(),
+            configured(&["--icons", "unicode", "a.md"], &config).icons,
             IconSet::Unicode
         );
     }
@@ -558,7 +500,7 @@ mod tests {
     #[test]
     fn icons_are_independent_of_the_colour_policy() {
         assert_eq!(
-            cli(&["--plain", "--icons", "nerd", "a.md"]).icons(),
+            cli(&["--plain", "--icons", "nerd", "a.md"]).icons,
             IconSet::Nerd
         );
     }

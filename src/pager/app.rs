@@ -11,8 +11,9 @@ use crossterm::event::{self, Event};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
-use crate::cli::{Flavor, MermaidMode};
+use crate::diagram::MermaidMode;
 use crate::error::{AppError, Result};
+use crate::flavor::Flavor;
 use crate::input;
 use crate::layout::inline::InlineContext;
 use crate::layout::theme::Theme;
@@ -25,14 +26,11 @@ use crate::pager::images::{self, Placed};
 use crate::pager::state::{OutlineItem, PagerState, rendered_line_for_source, source_line_at};
 use crate::pager::view::{ViewContext, draw, help_rows, widest_line};
 use crate::pager::watch::Watch;
-use crate::source::SourceText;
 
 /// How long a frame waits for input before looping again.
 const POLL: Duration = Duration::from_millis(250);
 
-/// The file to follow, and how to parse it again. Reloading repeats exactly the
-/// steps taken at startup, so a reloaded document is indistinguishable from one
-/// opened fresh.
+/// The file to follow, and how to parse it again.
 pub struct Watched {
     pub path: PathBuf,
     pub flavor: Flavor,
@@ -41,10 +39,12 @@ pub struct Watched {
 
 impl Watched {
     fn reload(&self) -> Result<Document> {
-        let loaded = input::load(&crate::cli::InputSource::File(self.path.clone()))?;
-        let mut document = crate::flavor::parse(SourceText::new(loaded.text), self.flavor);
-        crate::diagram::resolve(&mut document, self.mermaid, self.flavor);
-        Ok(document)
+        let loaded = input::load(&input::InputSource::File(self.path.clone()))?;
+        Ok(crate::document::build(
+            loaded.text,
+            self.flavor,
+            self.mermaid,
+        ))
     }
 }
 
@@ -53,7 +53,7 @@ pub struct PagerInput {
     pub inline: InlineContext,
     pub theme: Theme,
     pub title: String,
-    pub flavor: &'static str,
+    pub flavor: String,
     /// Overrides the terminal width when the reader passed `--width`.
     pub width_override: Option<usize>,
     pub start_line: Option<usize>,
@@ -143,7 +143,7 @@ fn event_loop(input: PagerInput) -> Result<()> {
 
         let ctx = ViewContext {
             title: &title,
-            flavor,
+            flavor: &flavor,
             source_lines: document.source.line_count(),
             diagnostics: rendered.diagnostics.len(),
             theme,
@@ -168,7 +168,8 @@ fn event_loop(input: PagerInput) -> Result<()> {
                     rendered = layout_document(&document, LayoutOptions::new(width), &inline);
                     images::release(protocol, &mut sent)?;
                     texts = line_texts(&rendered);
-                    restore(&mut state, &rendered, &texts, &document, anchor);
+                    let viewport = (state.height, state.width);
+                    restore(&mut state, &rendered, &texts, &document, anchor, viewport);
                     state.status = Some("reloaded".to_string());
                 }
                 // A file being rewritten can be briefly missing or invalid.
@@ -198,42 +199,29 @@ fn event_loop(input: PagerInput) -> Result<()> {
                 // Every placement is new after a re-layout.
                 images::release(protocol, &mut sent)?;
                 texts = line_texts(&rendered);
-                state.resize(
-                    rendered.lines.len(),
-                    widest_line(&rendered.lines),
-                    rows.saturating_sub(1) as usize,
-                    columns as usize,
-                );
-                state.set_outline(outline(&document, &rendered));
-                state.initial_line = None;
-                if let Some(line) = anchor
-                    && let Some(index) = rendered_line_for_source(&rendered.lines, line)
-                {
-                    state.top = index.min(state.max_top());
-                }
-                // After the viewport is back where it was, so the current match
-                // is chosen from the reader's place in the new layout.
-                state.recompute_searches(&texts);
+                let viewport = (rows.saturating_sub(1) as usize, columns as usize);
+                restore(&mut state, &rendered, &texts, &document, anchor, viewport);
             }
             _ => {}
         }
     }
 }
 
-/// Put the reader back where they were after the surface was rebuilt at the
-/// same size, keeping `anchor`'s source line in view.
+/// Put the reader back where they were after the surface was rebuilt, keeping
+/// `anchor`'s source line in view. `viewport` is the body's height and width.
 fn restore(
     state: &mut PagerState,
     rendered: &RenderedDocument,
     texts: &[String],
     document: &Document,
     anchor: Option<usize>,
+    (height, width): (usize, usize),
 ) {
     state.resize(
         rendered.lines.len(),
         widest_line(&rendered.lines),
-        state.height,
-        state.width,
+        height,
+        width,
     );
     state.set_outline(outline(document, rendered));
     state.initial_line = None;
@@ -242,6 +230,8 @@ fn restore(
     {
         state.top = index.min(state.max_top());
     }
+    // After the viewport is back where it was, so the current match is chosen
+    // from the reader's place in the new layout.
     state.recompute_searches(texts);
 }
 

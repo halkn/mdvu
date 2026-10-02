@@ -2,6 +2,7 @@ mod cli;
 mod config;
 mod diagnostic;
 mod diagram;
+mod document;
 mod error;
 mod flavor;
 mod image;
@@ -17,7 +18,6 @@ use error::{AppError, Result};
 use layout::LayoutOptions;
 use layout::inline::InlineContext;
 use layout::theme::{Theme, Variant};
-use source::SourceText;
 
 /// Used when the terminal size is unavailable, such as when stdout is a pipe.
 const DEFAULT_WIDTH: usize = 80;
@@ -45,8 +45,7 @@ fn run(cli: &Cli) -> Result<()> {
     let images = cli.images(ctx, color);
     let mermaid = cli.mermaid_mode(images);
 
-    let mut document = flavor::parse(SourceText::new(loaded.text), cli.flavor);
-    diagram::resolve(&mut document, mermaid, cli.flavor);
+    let document = document::build(loaded.text, cli.flavor, mermaid);
     let inline = InlineContext {
         mermaid,
         // The root depends on the path alone, so a reload under `--watch` keeps
@@ -55,7 +54,7 @@ fn run(cli: &Cli) -> Result<()> {
         base_dir: loaded.base_dir,
         highlight: cli.highlight(color),
         images: images.map(image::ImageSupport::detect),
-        icons: cli.icons(),
+        icons: cli.icons,
     };
     match mode {
         cli::OutputMode::Pager => pager::run(pager::PagerInput {
@@ -65,7 +64,7 @@ fn run(cli: &Cli) -> Result<()> {
             title: loaded.display_name,
             flavor: flavor_label(cli.flavor),
             width_override: cli.width.map(usize::from),
-            start_line: cli.start_line(),
+            start_line: cli.line,
             watched: watched(cli, &source, mermaid),
         }),
         cli::OutputMode::Stdout => {
@@ -87,11 +86,11 @@ fn run(cli: &Cli) -> Result<()> {
 /// watched; the CLI already rejects that combination.
 fn watched(
     cli: &Cli,
-    source: &cli::InputSource,
-    mermaid: cli::MermaidMode,
+    source: &input::InputSource,
+    mermaid: diagram::MermaidMode,
 ) -> Option<pager::Watched> {
     match source {
-        cli::InputSource::File(path) if cli.watch => Some(pager::Watched {
+        input::InputSource::File(path) if cli.watch => Some(pager::Watched {
             path: path.clone(),
             flavor: cli.flavor,
             mermaid,
@@ -100,11 +99,11 @@ fn watched(
     }
 }
 
-fn flavor_label(flavor: cli::Flavor) -> &'static str {
-    match flavor {
-        cli::Flavor::Gfm => "gfm",
-        cli::Flavor::AzureDevops => "azure-devops",
-    }
+fn flavor_label(flavor: flavor::Flavor) -> String {
+    clap::ValueEnum::to_possible_value(&flavor)
+        .expect("every flavor has a name")
+        .get_name()
+        .to_string()
 }
 
 fn resolve_width(cli: &Cli, ctx: TerminalContext) -> usize {

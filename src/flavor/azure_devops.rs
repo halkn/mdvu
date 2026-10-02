@@ -522,14 +522,6 @@ fn post_process_blocks(blocks: &mut [Block]) {
         match block {
             Block::Heading(h) => post_process_inlines(&mut h.content),
             Block::Paragraph(p) => post_process_inlines(&mut p.content),
-            Block::Quote(q) => post_process_blocks(&mut q.blocks),
-            Block::Details(d) => post_process_blocks(&mut d.blocks),
-            Block::Footnote(f) => post_process_blocks(&mut f.blocks),
-            Block::List(l) => {
-                for item in &mut l.items {
-                    post_process_blocks(&mut item.blocks);
-                }
-            }
             Block::Table(t) => {
                 for cell in t.header.iter_mut().chain(t.rows.iter_mut().flatten()) {
                     post_process_inlines(&mut cell.content);
@@ -544,6 +536,9 @@ fn post_process_blocks(blocks: &mut [Block]) {
                 ));
             }
             _ => {}
+        }
+        for children in block.children_mut() {
+            post_process_blocks(children);
         }
     }
 }

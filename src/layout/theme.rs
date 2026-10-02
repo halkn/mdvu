@@ -1,8 +1,17 @@
 //! Backend-neutral styling for semantic roles.
 
-use crate::cli::Theme as ThemeOption;
+use clap::ValueEnum;
+
 use crate::layout::{StyleRole, SyntaxKind};
 use crate::markdown::model::AlertKind;
+
+/// The theme the reader asked for; `Variant` is what it resolves to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum ThemeChoice {
+    Auto,
+    Dark,
+    Light,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Color {
@@ -99,11 +108,11 @@ pub enum Variant {
 impl Variant {
     /// Theme `auto` never issues a blocking terminal query. It uses the
     /// conventional `COLORFGBG` hint when present and falls back to dark.
-    pub fn resolve(option: ThemeOption) -> Self {
+    pub fn resolve(option: ThemeChoice) -> Self {
         match option {
-            ThemeOption::Dark => Variant::Dark,
-            ThemeOption::Light => Variant::Light,
-            ThemeOption::Auto => Self::from_env().unwrap_or(Variant::Dark),
+            ThemeChoice::Dark => Variant::Dark,
+            ThemeChoice::Light => Variant::Light,
+            ThemeChoice::Auto => Self::from_env().unwrap_or(Variant::Dark),
         }
     }
 
@@ -242,8 +251,8 @@ mod tests {
 
     #[test]
     fn explicit_theme_options_win() {
-        assert_eq!(Variant::resolve(ThemeOption::Dark), Variant::Dark);
-        assert_eq!(Variant::resolve(ThemeOption::Light), Variant::Light);
+        assert_eq!(Variant::resolve(ThemeChoice::Dark), Variant::Dark);
+        assert_eq!(Variant::resolve(ThemeChoice::Light), Variant::Light);
     }
 
     #[test]

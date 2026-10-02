@@ -1,5 +1,4 @@
-use crate::cli::Flavor;
-use crate::flavor::parse;
+use crate::flavor::{Flavor, parse};
 use crate::markdown::model::*;
 use crate::source::SourceText;
 
@@ -118,6 +117,20 @@ fn mermaid_containers_and_fences_both_become_diagrams() {
 #[test]
 fn fenced_mermaid_works_in_gfm_flavor_too() {
     assert_eq!(kinds(&gfm("```mermaid\ngraph LR\n```\n")), vec!["diagram"]);
+}
+
+#[test]
+fn fenced_mermaid_in_a_gfm_footnote_becomes_a_diagram() {
+    let doc = gfm("Text[^1]\n\n[^1]: Note\n\n    ```mermaid\n    graph LR\n    ```\n");
+    let Some(Block::Footnote(footnote)) =
+        doc.blocks.iter().find(|b| matches!(b, Block::Footnote(_)))
+    else {
+        panic!("expected a footnote, got {:?}", kinds(&doc));
+    };
+    assert_eq!(
+        footnote.blocks.iter().map(kind).collect::<Vec<_>>(),
+        vec!["paragraph", "diagram"]
+    );
 }
 
 #[test]

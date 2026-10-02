@@ -5,6 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::image::has_scheme;
 use crate::layout::icons::IconSet;
 use crate::layout::{RenderedSpan, StyleRole};
 use crate::markdown::model::{Inline, plain_text};
@@ -20,7 +21,7 @@ pub struct InlineContext {
     /// How diagram blocks are presented. Diagrams are rendered before layout;
     /// this only selects between the rendered form, the source and an omitted
     /// marker.
-    pub mermaid: crate::cli::MermaidMode,
+    pub mermaid: crate::diagram::MermaidMode,
     /// Whether code blocks are split into syntax roles. Off for plain output,
     /// where every role would collapse to the same bytes anyway.
     pub highlight: bool,
@@ -228,19 +229,7 @@ fn display_target(dest: &str, ctx: &InlineContext) -> String {
 }
 
 fn is_relative_path(dest: &str) -> bool {
-    !dest.starts_with('#')
-        && !dest.starts_with('/')
-        && !dest.starts_with("mailto:")
-        && !has_scheme(dest)
-}
-
-fn has_scheme(dest: &str) -> bool {
-    match dest.find("://") {
-        Some(index) => dest[..index]
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '-' || c == '.'),
-        None => false,
-    }
+    !dest.starts_with('#') && !dest.starts_with('/') && !has_scheme(dest)
 }
 
 fn is_image_path(dest: &str) -> bool {
@@ -461,6 +450,21 @@ mod tests {
         let rendered = text_of(&spans(&inlines, &c));
         assert!(rendered.contains("design.md"));
         assert!(rendered.contains("docs"));
+    }
+
+    #[test]
+    fn a_target_with_any_scheme_is_shown_as_written() {
+        let c = InlineContext {
+            base_dir: Some(PathBuf::from("docs")),
+            ..Default::default()
+        };
+        for dest in [
+            "mailto:a@example.com",
+            "tel:+81-3-0000",
+            "vscode:extension/x",
+        ] {
+            assert_eq!(display_target(dest, &c), dest);
+        }
     }
 
     #[test]

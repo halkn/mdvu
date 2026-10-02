@@ -4,9 +4,17 @@ pub mod gfm;
 #[cfg(test)]
 mod tests;
 
-use crate::cli::Flavor;
+use clap::ValueEnum;
+
 use crate::markdown::model::Document;
 use crate::source::SourceText;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum Flavor {
+    Gfm,
+    #[value(name = "azure-devops")]
+    AzureDevops,
+}
 
 pub fn parse(source: SourceText, flavor: Flavor) -> Document {
     match flavor {

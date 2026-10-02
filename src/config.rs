@@ -12,21 +12,23 @@ use std::path::PathBuf;
 use clap::ValueEnum;
 use serde::Deserialize;
 
-use crate::cli::{
-    ColorWhen, Flavor, HighlightWhen, HyperlinkWhen, IconsSet, ImagesWhen, MermaidMode, Theme,
-};
+use crate::cli::{ColorWhen, HighlightWhen, HyperlinkWhen, ImagesWhen};
+use crate::diagram::MermaidMode;
+use crate::flavor::Flavor;
+use crate::layout::icons::IconSet;
+use crate::layout::theme::ThemeChoice;
 
 /// Overrides an absent flag would otherwise take from its built-in default.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Config {
     pub flavor: Option<Flavor>,
     pub mermaid: Option<MermaidMode>,
-    pub theme: Option<Theme>,
+    pub theme: Option<ThemeChoice>,
     pub color: Option<ColorWhen>,
     pub hyperlinks: Option<HyperlinkWhen>,
     pub highlight: Option<HighlightWhen>,
     pub images: Option<ImagesWhen>,
-    pub icons: Option<IconsSet>,
+    pub icons: Option<IconSet>,
     pub width: Option<u16>,
     pub watch: Option<bool>,
 }
@@ -186,12 +188,12 @@ mod tests {
             Config {
                 flavor: Some(Flavor::Gfm),
                 mermaid: Some(MermaidMode::Ascii),
-                theme: Some(Theme::Light),
+                theme: Some(ThemeChoice::Light),
                 color: Some(ColorWhen::Always),
                 hyperlinks: Some(HyperlinkWhen::Never),
                 highlight: Some(HighlightWhen::Never),
                 images: Some(ImagesWhen::Kitty),
-                icons: Some(IconsSet::Nerd),
+                icons: Some(IconSet::Nerd),
                 width: Some(100),
                 watch: None,
             }

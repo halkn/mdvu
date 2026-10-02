@@ -245,6 +245,34 @@ pub struct ImageInline {
     pub alt: String,
 }
 
+impl Block {
+    /// The block sequences nested directly inside this block. Every traversal
+    /// descends through this, so a container is never missed by one of them.
+    pub fn children(&self) -> impl Iterator<Item = &[Block]> {
+        let (own, items): (Option<&[Block]>, &[ListItem]) = match self {
+            Block::Quote(q) => (Some(&q.blocks), &[]),
+            Block::Details(d) => (Some(&d.blocks), &[]),
+            Block::Footnote(f) => (Some(&f.blocks), &[]),
+            Block::List(l) => (None, &l.items),
+            _ => (None, &[]),
+        };
+        own.into_iter()
+            .chain(items.iter().map(|item| item.blocks.as_slice()))
+    }
+
+    pub fn children_mut(&mut self) -> impl Iterator<Item = &mut [Block]> {
+        let (own, items): (Option<&mut [Block]>, &mut [ListItem]) = match self {
+            Block::Quote(q) => (Some(&mut q.blocks), &mut []),
+            Block::Details(d) => (Some(&mut d.blocks), &mut []),
+            Block::Footnote(f) => (Some(&mut f.blocks), &mut []),
+            Block::List(l) => (None, &mut l.items),
+            _ => (None, &mut []),
+        };
+        own.into_iter()
+            .chain(items.iter_mut().map(|item| item.blocks.as_mut_slice()))
+    }
+}
+
 #[cfg(test)]
 impl Block {
     pub fn range(&self) -> SourceRange {
@@ -275,16 +303,11 @@ pub fn headings(blocks: &[Block]) -> Vec<&HeadingBlock> {
 
 fn collect_headings<'a>(blocks: &'a [Block], out: &mut Vec<&'a HeadingBlock>) {
     for block in blocks {
-        match block {
-            Block::Heading(h) => out.push(h),
-            Block::Quote(q) => collect_headings(&q.blocks, out),
-            Block::Details(d) => collect_headings(&d.blocks, out),
-            Block::List(l) => {
-                for item in &l.items {
-                    collect_headings(&item.blocks, out);
-                }
-            }
-            _ => {}
+        if let Block::Heading(h) = block {
+            out.push(h);
+        }
+        for children in block.children() {
+            collect_headings(children, out);
         }
     }
 }
