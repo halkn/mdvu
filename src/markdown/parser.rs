@@ -326,9 +326,7 @@ impl<'a> Builder<'a> {
                 let plain = plain_text(&content);
                 self.push_block(Block::Heading(HeadingBlock {
                     level,
-                    atx: self.source.as_str()[start..end]
-                        .trim_start()
-                        .starts_with('#'),
+                    atx: is_atx(&self.source.as_str()[start..end]),
                     content,
                     plain,
                     range,
@@ -560,6 +558,14 @@ fn starts_block(tag: &Tag<'_>) -> bool {
             | Tag::FootnoteDefinition(_)
             | Tag::Table(_)
     )
+}
+
+/// A setext heading's text may itself start with `#`, as in `#hashtag` over
+/// `===`; only a run of `#` followed by whitespace or the line end opens an ATX
+/// heading.
+fn is_atx(heading: &str) -> bool {
+    let rest = heading.trim_start().trim_start_matches('#');
+    rest.len() < heading.trim_start().len() && rest.chars().next().is_none_or(char::is_whitespace)
 }
 
 fn closes_container(tag: &TagEnd) -> bool {

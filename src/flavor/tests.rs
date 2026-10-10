@@ -546,3 +546,13 @@ fn an_outer_details_without_a_summary_does_not_take_the_inner_one() {
     assert_eq!(plain_text(&inner.summary), "Inner");
     assert_eq!(outer.blocks.len(), 2);
 }
+
+#[test]
+fn toc_skips_setext_headings_that_start_with_a_hash() {
+    let doc = azure("[[_TOC_]]\n\n#hashtag\n===\n\n# Real\n");
+    let Some(Block::Toc(toc)) = doc.blocks.iter().find(|b| matches!(b, Block::Toc(_))) else {
+        panic!("expected a TOC");
+    };
+    let labels: Vec<&str> = toc.entries.iter().map(|e| e.text.as_str()).collect();
+    assert_eq!(labels, vec!["Real"]);
+}
