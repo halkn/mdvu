@@ -247,7 +247,9 @@ fn paragraph(
     ctx: &PreparedDocument,
     out: &mut Vec<RenderedLine>,
 ) {
-    if let Some(placement) = drawable_image(p, width, ctx) {
+    // Only a paragraph that is one image has one prepared; an image among words
+    // would need a multi-row box inside a wrapped line.
+    if let Some(placement) = ctx.image(p.range, width) {
         reserve(&placement, p.range, out);
         return;
     }
@@ -274,18 +276,6 @@ pub(super) fn reserve(
             image: (row == 0).then(|| Rc::clone(placement)),
         });
     }
-}
-
-/// A paragraph whose whole content is one image, resolved against the terminal.
-///
-/// Only this shape becomes a picture. An image sitting among words would need a
-/// multi-row box inside a wrapped line, so it keeps its text placeholder.
-fn drawable_image(
-    p: &ParagraphBlock,
-    width: usize,
-    ctx: &PreparedDocument,
-) -> Option<Rc<crate::image::Placement>> {
-    ctx.image(p.range, width)
 }
 
 /// Bullets by nesting depth. All three are East Asian Width Ambiguous, the same

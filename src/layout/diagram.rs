@@ -1,8 +1,6 @@
 //! Diagram blocks to rendered lines: the rendered text, a picture, the source
 //! or an error with the source underneath.
 
-use std::rc::Rc;
-
 use crate::diagram::MermaidMode;
 use crate::layout::PreparedDocument;
 use crate::layout::document::{BORDER, expand_tabs, line, reserve};
@@ -49,7 +47,7 @@ pub(super) fn diagram(
         return;
     }
 
-    if let Some(placement) = drawable_diagram(d, width, ctx) {
+    if let Some(placement) = ctx.image(d.range, width) {
         reserve(&placement, d.range, out);
         return;
     }
@@ -82,14 +80,6 @@ pub(super) fn diagram(
         d,
         true,
     ));
-}
-
-fn drawable_diagram(
-    d: &DiagramBlock,
-    width: usize,
-    ctx: &PreparedDocument,
-) -> Option<Rc<crate::image::Placement>> {
-    ctx.image(d.range, width)
 }
 
 /// Show a short error and the original source, so a broken diagram never hides

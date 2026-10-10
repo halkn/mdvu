@@ -76,8 +76,9 @@ impl ImageSupport {
 pub struct Placement {
     pub cols: usize,
     pub rows: usize,
-    /// Unique within the process, so a kitty terminal can keep the image
-    /// stored under it while the pager scrolls.
+    /// The `ImageAsset`'s id, shared by every placement of it across layouts,
+    /// so a kitty terminal keeps one stored copy while the pager scrolls and
+    /// resizes.
     pub id: u32,
     protocol: Protocol,
     asset: Rc<ImageAsset>,
@@ -92,6 +93,14 @@ pub struct ImageAsset {
 }
 
 impl ImageAsset {
+    /// A PNG `mdvu` drew itself, such as a rasterised diagram, that is
+    /// `css_width` CSS pixels wide. No file is read, so only the format and the
+    /// area are checked.
+    ///
+    /// Its size follows the CSS pixels a browser would show rather than the
+    /// terminal's cell or the picture's resolution: a high-density display
+    /// reports device pixels, which would halve the picture, and a large
+    /// diagram is drawn at a lower resolution than a small one.
     pub fn from_png(bytes: Rc<[u8]>, css_width: u32) -> Option<Rc<Self>> {
         if dimensions::format_of(&bytes) != Some(Format::Png) {
             return None;
@@ -230,23 +239,9 @@ pub fn protocol_from_env(env: &Env) -> Option<Protocol> {
     }
 }
 
-/// Reads the image `dest` points at and works out its area, or `None` when any
-/// rule below is not met. A rejected image keeps its text placeholder; it is
-/// never an error and never changes the exit code.
-#[cfg(test)]
-pub fn resolve(
-    dest: &str,
-    base_dir: Option<&Path>,
-    content_root: Option<&Path>,
-    support: ImageSupport,
-    max_cols: usize,
-) -> Option<Rc<Placement>> {
-    if max_cols == 0 {
-        return None;
-    }
-    load(dest, base_dir, content_root)?.place(support, max_cols)
-}
-
+/// Reads the image `dest` points at, or `None` when any rule below is not met.
+/// A rejected image keeps its text placeholder; it is never an error and never
+/// changes the exit code.
 pub fn load(
     dest: &str,
     base_dir: Option<&Path>,
@@ -279,24 +274,6 @@ pub fn load(
     }
     let pixels = dimensions::dimensions(&bytes)?;
     Some(ImageAsset::new(bytes.into(), pixels, None))
-}
-
-/// Places a PNG `mdvu` drew itself, such as a rasterised diagram, that is
-/// `css_width` CSS pixels wide. No file is read, so only the format and the
-/// area are checked.
-///
-/// Its size follows the CSS pixels a browser would show rather than the
-/// terminal's cell or the picture's resolution: a high-density display reports
-/// device pixels, which would halve the picture, and a large diagram is drawn
-/// at a lower resolution than a small one.
-#[cfg(test)]
-pub fn from_png(
-    bytes: Vec<u8>,
-    support: ImageSupport,
-    max_cols: usize,
-    css_width: u32,
-) -> Option<Rc<Placement>> {
-    ImageAsset::from_png(bytes.into(), css_width)?.place(support, max_cols)
 }
 
 /// A local path, or `None` for anything with a URL scheme. Remote images are
@@ -471,6 +448,25 @@ mod tests {
         out.extend_from_slice(&height.to_be_bytes());
         out.extend_from_slice(&[8, 6, 0, 0, 0]);
         out
+    }
+
+    fn from_png(
+        bytes: Vec<u8>,
+        support: ImageSupport,
+        max_cols: usize,
+        css_width: u32,
+    ) -> Option<Rc<Placement>> {
+        ImageAsset::from_png(bytes.into(), css_width)?.place(support, max_cols)
+    }
+
+    fn resolve(
+        dest: &str,
+        base_dir: Option<&Path>,
+        content_root: Option<&Path>,
+        support: ImageSupport,
+        max_cols: usize,
+    ) -> Option<Rc<Placement>> {
+        load(dest, base_dir, content_root)?.place(support, max_cols)
     }
 
     const SUPPORT: ImageSupport = ImageSupport {
