@@ -24,6 +24,15 @@ pub fn into_visible(text: String) -> String {
     }
 }
 
+/// Prose has no columns to keep, so whitespace controls become one space
+/// instead of an escape; any other control is left for `visible`.
+pub fn spaced(text: &str) -> Cow<'_, str> {
+    if !text.contains(['\t', '\n', '\r']) {
+        return Cow::Borrowed(text);
+    }
+    Cow::Owned(text.replace("\r\n", "\n").replace(['\t', '\n', '\r'], " "))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -35,5 +44,11 @@ mod tests {
             "日\\x1b[31m\\x07\\x9b\\x7f"
         );
         assert!(matches!(visible("日本語 👩‍💻"), Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn whitespace_controls_become_single_spaces() {
+        assert_eq!(spaced("a\tb\r\nc\nd\x1b"), "a b c d\x1b");
+        assert!(matches!(spaced("a b"), Cow::Borrowed(_)));
     }
 }
