@@ -68,9 +68,16 @@ impl Drop for TerminalGuard {
 
 fn restore() {
     let mut out: Stdout = stdout();
-    let _ = execute!(out, LeaveAlternateScreen, Show);
+    let _ = leave_screen(&mut out);
     let _ = disable_raw_mode();
     let _ = out.flush();
+}
+
+/// Images go first: kitty stores them per screen, so once the main screen is
+/// back a free would miss them and could hit the main screen's own.
+fn leave_screen(out: &mut impl Write) -> std::io::Result<()> {
+    out.write_all(images::take_release().as_bytes())?;
+    execute!(out, LeaveAlternateScreen, Show)
 }
 
 /// Restore the terminal before the default panic handler prints, then let the
@@ -91,6 +98,36 @@ fn install_panic_hook() {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn images_are_freed_before_leaving_the_alternate_screen() {
+        use crate::image::{CellSize, ImageAsset, ImageSupport, Protocol, protocol};
+        let bytes = include_bytes!("../../tests/fixtures/gfm/.attachments/architecture.png");
+        let asset = ImageAsset::from_png(std::rc::Rc::from(bytes.as_slice()), 400).unwrap();
+        let support = ImageSupport {
+            protocol: Protocol::Kitty,
+            cell: CellSize {
+                width: 10,
+                height: 20,
+            },
+        };
+        let image = asset.place(support, 80).unwrap();
+        let id = image.id;
+        let line = crate::layout::RenderedLine {
+            image: Some(image),
+            ..Default::default()
+        };
+        let mut session = images::ImageSession::with_writer(Some(Protocol::Kitty), Vec::new());
+        session
+            .draw(images::visible(&[line], 0, 0, 80, 24))
+            .unwrap();
+        let mut out = Vec::new();
+        leave_screen(&mut out).unwrap();
+        let out = String::from_utf8(out).unwrap();
+        let free = protocol::free(id);
+        assert!(out.starts_with(&free), "{out:?}");
+        assert!(out[free.len()..].contains("\x1b[?1049l"));
+    }
 
     #[test]
     fn restoration_runs_once_on_partial_failure_normal_exit_and_panic() {

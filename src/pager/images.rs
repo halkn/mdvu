@@ -5,6 +5,7 @@
 //! function; `app.rs` only compares the result with the previous frame and
 //! sends the bytes.
 
+use std::cell::RefCell;
 use std::collections::HashSet;
 use std::io::Write;
 use std::rc::Rc;
@@ -14,11 +15,39 @@ use crate::image::{MAX_ROWS, Placement, Protocol, protocol};
 use crate::layout::RenderedLine;
 use crate::layout::wrap::display_width;
 
+/// What the terminal stores, kept outside the session so `TerminalGuard` can
+/// free it before leaving the alternate screen. The panic hook leaves before
+/// unwinding drops the session, and kitty keeps images per screen, so a free
+/// sent from `Drop` would reach the main screen and its unrelated images.
+#[derive(Default)]
+struct Stored {
+    protocol: Option<Protocol>,
+    ids: HashSet<u32>,
+}
+
+thread_local! {
+    static STORED: RefCell<Stored> = RefCell::default();
+}
+
+/// The bytes that free every image the terminal stores, which is then recorded
+/// as storing nothing. Empty when there is nothing to free, or when a panic hit
+/// while a frame was recording what it sent.
+pub fn take_release() -> String {
+    STORED
+        .try_with(|stored| {
+            let Ok(mut stored) = stored.try_borrow_mut() else {
+                return String::new();
+            };
+            let bytes = release_bytes(stored.protocol, &stored.ids);
+            stored.ids.clear();
+            bytes
+        })
+        .unwrap_or_default()
+}
+
 pub struct ImageSession<W: Write = std::io::Stdout> {
     out: W,
-    protocol: Option<Protocol>,
     shown: Vec<Placed>,
-    sent: HashSet<u32>,
 }
 
 impl ImageSession {
@@ -28,12 +57,16 @@ impl ImageSession {
 }
 
 impl<W: Write> ImageSession<W> {
-    fn with_writer(protocol: Option<Protocol>, out: W) -> Self {
+    pub(super) fn with_writer(protocol: Option<Protocol>, out: W) -> Self {
+        STORED.with_borrow_mut(|stored| {
+            *stored = Stored {
+                protocol,
+                ids: HashSet::new(),
+            }
+        });
         Self {
             out,
-            protocol,
             shown: Vec::new(),
-            sent: HashSet::new(),
         }
     }
 
@@ -43,7 +76,8 @@ impl<W: Write> ImageSession<W> {
 
     pub fn draw(&mut self, wanted: Vec<Placed>) -> Result<()> {
         if wanted != self.shown {
-            let bytes = frame(&self.shown, &wanted, &mut self.sent);
+            let bytes =
+                STORED.with_borrow_mut(|stored| frame(&self.shown, &wanted, &mut stored.ids));
             write(&mut self.out, &bytes)?;
             self.shown = wanted;
         }
@@ -51,10 +85,7 @@ impl<W: Write> ImageSession<W> {
     }
 
     pub fn release(&mut self) -> Result<()> {
-        let bytes = release_bytes(self.protocol, &self.sent);
-        write(&mut self.out, &bytes)?;
-        self.sent.clear();
-        Ok(())
+        write(&mut self.out, &take_release())
     }
 
     /// For a resize, where `ratatui` clears the whole screen. A clear may take
@@ -64,12 +95,6 @@ impl<W: Write> ImageSession<W> {
         self.release()?;
         self.shown.clear();
         Ok(())
-    }
-}
-
-impl<W: Write> Drop for ImageSession<W> {
-    fn drop(&mut self) {
-        let _ = self.release();
     }
 }
 
@@ -268,7 +293,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_draw_still_releases_registered_images() {
+    fn a_failed_draw_still_records_the_image_for_release() {
         let writer = TestWriter::default();
         writer.fail.set(true);
         let image = placement(10, 4);
@@ -279,8 +304,8 @@ mod tests {
                 .draw(visible(&document(image, 0, ""), 0, 0, 80, 24))
                 .is_err()
         );
-        drop(session);
-        assert_eq!(*writer.bytes.borrow(), protocol::free(id).as_bytes());
+        assert_eq!(take_release(), protocol::free(id));
+        assert_eq!(take_release(), "");
     }
 
     fn placement(cols: usize, rows: usize) -> Rc<Placement> {

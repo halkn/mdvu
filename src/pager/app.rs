@@ -191,8 +191,6 @@ fn event_loop(input: PagerInput) -> Result<()> {
         match event::read().map_err(|source| AppError::Terminal { source })? {
             Event::Key(key) if key.is_press() => {
                 if !handle_key(&mut state, key, &texts) {
-                    // Leave no image on screen or stored in the terminal.
-                    images.release()?;
                     return Ok(());
                 }
             }
