@@ -3,12 +3,26 @@
 //! Matching runs against what is on screen rather than the Markdown source, so
 //! a query finds what the reader can actually see.
 
+use std::cell::OnceCell;
 use std::ops::{Deref, Range};
 
 #[derive(Debug, Clone, Default)]
 pub struct SearchIndex {
     lines: Vec<String>,
-    folded: Vec<FoldedLine>,
+    /// Built by the first case-insensitive search: the index is rebuilt on
+    /// every resize and reload, mostly for a reader who never searches.
+    folded: OnceCell<Vec<FoldedLine>>,
+}
+
+impl SearchIndex {
+    fn folded(&self) -> &[FoldedLine] {
+        self.folded.get_or_init(|| {
+            self.lines
+                .iter()
+                .map(|text| FoldedLine::new(text))
+                .collect()
+        })
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -20,16 +34,16 @@ struct FoldedLine {
 impl FoldedLine {
     fn new(text: &str) -> Self {
         let mut changes = Vec::new();
-        let mut folded = 0;
+        let mut folded = String::with_capacity(text.len());
         for (original, ch) in text.char_indices() {
-            let length: usize = ch.to_lowercase().map(char::len_utf8).sum();
-            if length != ch.len_utf8() {
-                changes.push((folded..folded + length, original..original + ch.len_utf8()));
+            let start = folded.len();
+            folded.extend(ch.to_lowercase());
+            if folded.len() - start != ch.len_utf8() {
+                changes.push((start..folded.len(), original..original + ch.len_utf8()));
             }
-            folded += length;
         }
         Self {
-            text: text.to_lowercase(),
+            text: folded,
             changes,
         }
     }
@@ -56,9 +70,10 @@ impl FoldedLine {
 
 impl FromIterator<String> for SearchIndex {
     fn from_iter<T: IntoIterator<Item = String>>(lines: T) -> Self {
-        let lines: Vec<String> = lines.into_iter().collect();
-        let folded = lines.iter().map(|text| FoldedLine::new(text)).collect();
-        Self { lines, folded }
+        Self {
+            lines: lines.into_iter().collect(),
+            folded: OnceCell::new(),
+        }
     }
 }
 
@@ -153,29 +168,25 @@ impl Search {
         } else {
             self.query.clone()
         };
+        let folded = fold.then(|| lines.folded());
         for (index, line) in lines.lines.iter().enumerate() {
-            let folded = &lines.folded[index];
-            let haystack = if fold {
-                folded.text.as_str()
-            } else {
-                line.as_str()
-            };
+            let folded = folded.map(|folded| &folded[index]);
+            let haystack = folded.map_or(line.as_str(), |folded| folded.text.as_str());
             let mut from = 0usize;
             while let Some(found) = haystack[from..].find(&needle) {
                 let start = from + found;
                 let end = start + needle.len();
-                self.matches.push(if !fold {
-                    Match {
+                self.matches.push(match folded {
+                    None => Match {
                         line: index,
                         start,
                         end,
-                    }
-                } else {
-                    Match {
+                    },
+                    Some(folded) => Match {
                         line: index,
                         start: folded.original_offset(start, false),
                         end: folded.original_offset(end, true),
-                    }
+                    },
                 });
                 from = end.max(start + 1);
                 if from >= haystack.len() {
@@ -228,6 +239,17 @@ impl Search {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_folded_copy_is_built_only_for_a_case_insensitive_search() {
+        let lines: SearchIndex = vec!["Alpha".to_string()].into_iter().collect();
+        let mut search = Search::default();
+        search.set_query("Alpha", &lines);
+        assert!(lines.folded.get().is_none());
+        search.set_query("alpha", &lines);
+        assert_eq!(search.count(), 1);
+        assert!(lines.folded.get().is_some());
+    }
 
     #[test]
     fn folded_offsets_map_back_to_original_characters() {
