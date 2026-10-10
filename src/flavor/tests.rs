@@ -519,3 +519,30 @@ fn nested_toc_expands_first_and_ignores_later_macros() {
     assert!(matches!(&doc.blocks[1], Block::Placeholder(_)));
     assert_eq!(doc.diagnostics.len(), 1);
 }
+
+#[test]
+fn a_details_opening_tag_that_never_closes_stays_text() {
+    let doc = azure("<details\nfoo\n");
+    assert!(!kinds(&doc).contains(&"details"), "{:?}", kinds(&doc));
+}
+
+#[test]
+fn an_outer_details_without_a_summary_does_not_take_the_inner_one() {
+    let doc = azure(concat!(
+        "<details>\nOuter body\n\n",
+        "<details><summary>Inner</summary>\n\ninner text\n</details>\n",
+        "</details>\n"
+    ));
+    assert_eq!(kinds(&doc), vec!["details"]);
+    let Block::Details(outer) = &doc.blocks[0] else {
+        panic!("expected details");
+    };
+    assert_eq!(plain_text(&outer.summary), "Details");
+    assert!(matches!(&outer.blocks[0], Block::Paragraph(p)
+        if plain_text(&p.content) == "Outer body"));
+    let Block::Details(inner) = &outer.blocks[1] else {
+        panic!("expected nested details, got {:?}", outer.blocks);
+    };
+    assert_eq!(plain_text(&inner.summary), "Inner");
+    assert_eq!(outer.blocks.len(), 2);
+}

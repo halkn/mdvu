@@ -93,9 +93,10 @@ pub(super) fn scan(text: &str, range_start: usize, range_end: usize) -> Vec<Segm
                 continue;
             }
         }
-        if details_open(trimmed) {
+        if details_open(trimmed)
+            && let Some((details, next)) = read_details(&lines, index, line_start)
+        {
             push_markdown(&mut segments, markdown_start, line_start);
-            let (details, next) = read_details(&lines, index, line_start);
             segments.push(Segment::Details(details));
             markdown_start = next_start(&lines, next.saturating_sub(1));
             index = next;
@@ -212,13 +213,14 @@ fn details_open(text: &str) -> bool {
     })
 }
 
-/// Find the extent of a `<details>` block.
+/// Find the extent of a `<details>` block, or `None` when its opening tag never
+/// ends: a `<details` without `>` is not a tag, so it stays text.
 ///
-/// Only the outermost `<summary>` belongs to this block, and the body is
+/// Only a `<summary>` directly inside this block belongs to it, and the body is
 /// everything between the opening tag (or the summary, when present) and the
 /// `</details>` that returns the nesting depth to zero. Both bounds are byte
 /// offsets rather than whole lines, so a one-line block keeps its body.
-fn read_details(lines: &[(usize, &str)], index: usize, start: usize) -> (Details, usize) {
+fn read_details(lines: &[(usize, &str)], index: usize, start: usize) -> Option<(Details, usize)> {
     let mut summary = String::new();
     let mut summary_seen = false;
     let mut body_start: Option<usize> = None;
@@ -246,12 +248,6 @@ fn read_details(lines: &[(usize, &str)], index: usize, start: usize) -> (Details
             continue;
         }
 
-        if !summary_seen && let Some((text, after)) = extract_summary(&line[from..]) {
-            summary = text;
-            summary_seen = true;
-            body_start = Some(line_start + from + after);
-        }
-
         while let Some(relative) = line[from..].find('<') {
             let at = from + relative;
             if details_open(&line[at..]) {
@@ -264,12 +260,22 @@ fn read_details(lines: &[(usize, &str)], index: usize, start: usize) -> (Details
                 body_start.get_or_insert(line_start + from);
                 continue;
             }
+            if depth == 1
+                && !summary_seen
+                && let Some((text, after)) = extract_summary(&line[at..])
+            {
+                summary = text;
+                summary_seen = true;
+                from = at + after;
+                body_start = Some(line_start + from);
+                continue;
+            }
             if line[at..].starts_with(CLOSE_TAG) {
                 depth = depth.saturating_sub(1);
                 if depth == 0 {
                     let close = line_start + at;
-                    let body_start = body_start.unwrap_or(close).min(close);
-                    return (
+                    let body_start = body_start?.min(close);
+                    return Some((
                         Details {
                             summary,
                             body_start,
@@ -279,7 +285,7 @@ fn read_details(lines: &[(usize, &str)], index: usize, start: usize) -> (Details
                             unterminated: false,
                         },
                         cursor + 1,
-                    );
+                    ));
                 }
                 from = at + CLOSE_TAG.len();
             } else {
@@ -289,25 +295,27 @@ fn read_details(lines: &[(usize, &str)], index: usize, start: usize) -> (Details
 
         cursor += 1;
     }
-    (
+    Some((
         Details {
             summary,
-            body_start: body_start.unwrap_or(start).min(last_end),
+            body_start: body_start?.min(last_end),
             body_end: last_end,
             start,
             end: last_end,
             unterminated: true,
         },
         cursor,
-    )
+    ))
 }
 
-/// The summary text and the byte offset just past `</summary>` on this line.
-fn extract_summary(line: &str) -> Option<(String, usize)> {
-    let open = line.find("<summary>")? + "<summary>".len();
-    let close = line[open..].find("</summary>")? + open;
+/// The summary text and the byte offset just past `</summary>`, when `text`
+/// starts with a `<summary>` that closes on the same line.
+fn extract_summary(text: &str) -> Option<(String, usize)> {
+    let rest = text.strip_prefix("<summary>")?;
+    let open = "<summary>".len();
+    let close = rest.find("</summary>")? + open;
     Some((
-        line[open..close].trim().to_string(),
+        text[open..close].trim().to_string(),
         close + "</summary>".len(),
     ))
 }
