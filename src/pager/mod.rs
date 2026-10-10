@@ -3,6 +3,7 @@ pub mod event;
 pub mod help;
 pub mod images;
 pub mod search;
+mod search_session;
 pub mod state;
 pub mod view;
 pub mod watch;
@@ -21,17 +22,33 @@ use crossterm::terminal::{
 /// a normal exit, an error and a panic all leave the terminal usable.
 pub struct TerminalGuard {
     active: bool,
+    restore: fn(),
 }
 
 impl TerminalGuard {
     pub fn enter() -> std::io::Result<Self> {
-        enable_raw_mode()?;
-        let mut out = stdout();
-        // Mouse capture is never enabled; the pager does not handle mouse input.
-        execute!(out, EnterAlternateScreen, Hide)?;
-        out.flush()?;
         install_panic_hook();
-        Ok(Self { active: true })
+        enable_raw_mode()?;
+        Self::finish_enter(
+            || {
+                let mut out = stdout();
+                execute!(out, EnterAlternateScreen, Hide)?;
+                out.flush()
+            },
+            restore,
+        )
+    }
+
+    fn finish_enter(
+        initialize: impl FnOnce() -> std::io::Result<()>,
+        restore: fn(),
+    ) -> std::io::Result<Self> {
+        let guard = Self {
+            active: true,
+            restore,
+        };
+        initialize()?;
+        Ok(guard)
     }
 
     pub fn leave(&mut self) {
@@ -39,7 +56,7 @@ impl TerminalGuard {
             return;
         }
         self.active = false;
-        restore();
+        (self.restore)();
     }
 }
 
@@ -68,4 +85,35 @@ fn install_panic_hook() {
             previous(info);
         }));
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn restoration_runs_once_on_partial_failure_normal_exit_and_panic() {
+        static RESTORED: AtomicUsize = AtomicUsize::new(0);
+        fn restore_test() {
+            RESTORED.fetch_add(1, Ordering::SeqCst);
+        }
+        let result = TerminalGuard::finish_enter(
+            || Err(std::io::Error::other("screen failed")),
+            restore_test,
+        );
+        assert!(result.is_err());
+        assert_eq!(RESTORED.load(Ordering::SeqCst), 1);
+        {
+            let mut guard = TerminalGuard::finish_enter(|| Ok(()), restore_test).unwrap();
+            guard.leave();
+            guard.leave();
+        }
+        assert_eq!(RESTORED.load(Ordering::SeqCst), 2);
+        let _ = std::panic::catch_unwind(|| {
+            let _guard = TerminalGuard::finish_enter(|| Ok(()), restore_test).unwrap();
+            panic!("draw failed");
+        });
+        assert_eq!(RESTORED.load(Ordering::SeqCst), 3);
+    }
 }

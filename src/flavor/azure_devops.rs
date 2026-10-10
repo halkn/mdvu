@@ -5,43 +5,15 @@
 //! byte offsets and go to `pulldown-cmark` untouched, so source mapping
 //! survives. Nothing is rewritten into synthetic Markdown.
 
+mod scanner;
+
 use crate::diagnostic::Diagnostic;
 use crate::markdown::model::*;
 use crate::markdown::parser::parse_range;
 use crate::source::SourceText;
+use scanner::{Container, Details, Segment, scan};
 
 pub const TOSP_MESSAGE: &str = "Child pages unavailable in single-file mode";
-
-/// One piece of the document in source order.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum Segment {
-    Markdown { start: usize, end: usize },
-    Toc { start: usize, end: usize },
-    Tosp { start: usize, end: usize },
-    Container(Container),
-    Details(Details),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Container {
-    name: String,
-    argument: String,
-    body: String,
-    start: usize,
-    end: usize,
-    /// A container that ran to the end of the file without a closing `:::`.
-    unterminated: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Details {
-    summary: String,
-    body_start: usize,
-    body_end: usize,
-    start: usize,
-    end: usize,
-    unterminated: bool,
-}
 
 pub fn parse(source: SourceText) -> Document {
     let mut blocks = Vec::new();
@@ -194,6 +166,7 @@ fn details_block(
 fn expand_toc(blocks: &mut [Block], diagnostics: &mut Vec<Diagnostic>) {
     let entries: Vec<TocEntry> = headings(blocks)
         .into_iter()
+        .filter(|h| h.atx)
         .map(|h| TocEntry {
             level: h.level,
             text: h.plain.clone(),
@@ -202,11 +175,23 @@ fn expand_toc(blocks: &mut [Block], diagnostics: &mut Vec<Diagnostic>) {
         .collect();
 
     let mut seen = false;
+    fill_toc(blocks, &entries, &mut seen, diagnostics);
+}
+
+fn fill_toc(
+    blocks: &mut [Block],
+    entries: &[TocEntry],
+    seen: &mut bool,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
     for block in blocks.iter_mut() {
         let Block::Toc(toc) = block else {
+            for children in block.children_mut() {
+                fill_toc(children, entries, seen, diagnostics);
+            }
             continue;
         };
-        if seen {
+        if *seen {
             let range = toc.range;
             diagnostics.push(Diagnostic::warning(
                 "only the first [[_TOC_]] is expanded",
@@ -220,297 +205,9 @@ fn expand_toc(blocks: &mut [Block], diagnostics: &mut Vec<Diagnostic>) {
             });
             continue;
         }
-        seen = true;
-        toc.entries = entries.clone();
+        *seen = true;
+        toc.entries = entries.to_vec();
     }
-}
-
-// ---------------------------------------------------------------- scanning
-
-fn scan(text: &str, range_start: usize, range_end: usize) -> Vec<Segment> {
-    if range_start >= range_end || range_end > text.len() {
-        return Vec::new();
-    }
-    let mut segments = Vec::new();
-    let mut markdown_start = range_start;
-    let mut fence: Option<String> = None;
-
-    let push_markdown = |segments: &mut Vec<Segment>, start: usize, end: usize| {
-        if start < end {
-            segments.push(Segment::Markdown { start, end });
-        }
-    };
-
-    // Offsets stay absolute so segments compose with the enclosing document.
-    let lines: Vec<(usize, &str)> = line_offsets(&text[range_start..range_end])
-        .into_iter()
-        .map(|(offset, line)| (range_start + offset, line))
-        .collect();
-    let mut index = 0usize;
-    while index < lines.len() {
-        let (line_start, line) = lines[index];
-        let trimmed = line.trim();
-
-        // Everything inside a code fence is literal, including Azure macros.
-        if let Some(marker) = &fence {
-            if trimmed.starts_with(marker.as_str()) {
-                fence = None;
-            }
-            index += 1;
-            continue;
-        }
-        if let Some(marker) = opening_fence(line) {
-            fence = Some(marker);
-            index += 1;
-            continue;
-        }
-
-        if trimmed == "[[_TOC_]]" {
-            push_markdown(&mut segments, markdown_start, line_start);
-            segments.push(Segment::Toc {
-                start: line_start,
-                end: line_start + line.len(),
-            });
-            markdown_start = next_start(&lines, index);
-            index += 1;
-            continue;
-        }
-        if trimmed == "[[_TOSP_]]" {
-            push_markdown(&mut segments, markdown_start, line_start);
-            segments.push(Segment::Tosp {
-                start: line_start,
-                end: line_start + line.len(),
-            });
-            markdown_start = next_start(&lines, index);
-            index += 1;
-            continue;
-        }
-        if let Some(rest) = trimmed.strip_prefix(":::") {
-            let header = rest.trim();
-            // A bare `:::` with no name closes nothing here; treat it as text.
-            if !header.is_empty() {
-                push_markdown(&mut segments, markdown_start, line_start);
-                let (container, next) = read_container(&lines, index, header, line_start);
-                segments.push(Segment::Container(container));
-                markdown_start = next_start(&lines, next.saturating_sub(1));
-                index = next;
-                continue;
-            }
-        }
-        if trimmed.starts_with("<details") {
-            push_markdown(&mut segments, markdown_start, line_start);
-            let (details, next) = read_details(&lines, index, line_start);
-            segments.push(Segment::Details(details));
-            markdown_start = next_start(&lines, next.saturating_sub(1));
-            index = next;
-            continue;
-        }
-
-        index += 1;
-    }
-
-    push_markdown(&mut segments, markdown_start, range_end);
-    segments
-}
-
-fn line_offsets(text: &str) -> Vec<(usize, &str)> {
-    let mut out = Vec::new();
-    let mut start = 0usize;
-    for line in text.split_inclusive('\n') {
-        out.push((start, line.trim_end_matches(['\n', '\r'])));
-        start += line.len();
-    }
-    if out.is_empty() {
-        out.push((0, ""));
-    }
-    out
-}
-
-fn next_start(lines: &[(usize, &str)], index: usize) -> usize {
-    lines
-        .get(index + 1)
-        .map(|(start, _)| *start)
-        .unwrap_or(usize::MAX)
-}
-
-fn opening_fence(line: &str) -> Option<String> {
-    let trimmed = line.trim_start();
-    // More than three leading spaces makes it indented code, not a fence.
-    if line.len() - trimmed.len() > 3 {
-        return None;
-    }
-    for marker in ["```", "~~~"] {
-        if trimmed.starts_with(marker) {
-            return Some(marker.to_string());
-        }
-    }
-    None
-}
-
-fn read_container(
-    lines: &[(usize, &str)],
-    index: usize,
-    header: &str,
-    start: usize,
-) -> (Container, usize) {
-    let (name, argument) = match header.split_once(char::is_whitespace) {
-        Some((name, rest)) => (name.to_string(), rest.trim().to_string()),
-        None => (header.to_string(), String::new()),
-    };
-    let mut body = String::new();
-    let mut cursor = index + 1;
-    // Where the body would end if no closing `:::` is ever found. Stopping at
-    // the first blank line keeps an unterminated container from swallowing the
-    // rest of the document, which would make everything after it unreadable.
-    let mut fallback: Option<(usize, String, usize)> = None;
-    let mut fence: Option<String> = None;
-    while cursor < lines.len() {
-        let (line_start, line) = lines[cursor];
-        // A `:::` inside a code fence is literal text, not a closing marker.
-        if let Some(marker) = &fence {
-            if line.trim().starts_with(marker.as_str()) {
-                fence = None;
-            }
-            body.push_str(line);
-            body.push('\n');
-            cursor += 1;
-            continue;
-        }
-        if let Some(marker) = opening_fence(line) {
-            fence = Some(marker);
-            body.push_str(line);
-            body.push('\n');
-            cursor += 1;
-            continue;
-        }
-        if line.trim().is_empty() && fallback.is_none() {
-            fallback = Some((cursor, body.clone(), line_start));
-        }
-        if line.trim() == ":::" {
-            return (
-                Container {
-                    name,
-                    argument,
-                    body,
-                    start,
-                    end: line_start + line.len(),
-                    unterminated: false,
-                },
-                cursor + 1,
-            );
-        }
-        body.push_str(line);
-        body.push('\n');
-        cursor += 1;
-    }
-    match fallback {
-        Some((blank_cursor, partial, blank_start)) => (
-            Container {
-                name,
-                argument,
-                body: partial,
-                start,
-                end: blank_start,
-                unterminated: true,
-            },
-            blank_cursor,
-        ),
-        None => {
-            let end = lines.last().map(|(s, l)| s + l.len()).unwrap_or(start);
-            (
-                Container {
-                    name,
-                    argument,
-                    body,
-                    start,
-                    end,
-                    unterminated: true,
-                },
-                cursor,
-            )
-        }
-    }
-}
-
-const CLOSE_TAG: &str = "</details>";
-
-/// Find the extent of a `<details>` block.
-///
-/// Only the outermost `<summary>` belongs to this block, and the body is
-/// everything between the opening tag (or the summary, when present) and the
-/// `</details>` that returns the nesting depth to zero. Both bounds are byte
-/// offsets rather than whole lines, so a one-line block keeps its body.
-fn read_details(lines: &[(usize, &str)], index: usize, start: usize) -> (Details, usize) {
-    let mut summary = String::new();
-    let mut summary_seen = false;
-    let mut body_start: Option<usize> = None;
-    let mut depth = 0usize;
-    let mut cursor = index;
-    let mut last_end = start;
-
-    while cursor < lines.len() {
-        let (line_start, line) = lines[cursor];
-        depth += line.matches("<details").count();
-
-        if !summary_seen && let Some((text, after)) = extract_summary(line) {
-            summary = text;
-            summary_seen = true;
-            body_start = Some(line_start + after);
-        }
-        // No summary yet: the body begins right after the opening tag, so a
-        // `<details>` without a `<summary>` still keeps its content.
-        if body_start.is_none()
-            && let Some(gt) = line.find('>')
-        {
-            body_start = Some(line_start + gt + 1);
-        }
-
-        let mut from = 0usize;
-        while let Some(relative) = line[from..].find(CLOSE_TAG) {
-            let at = from + relative;
-            depth = depth.saturating_sub(1);
-            if depth == 0 {
-                let close = line_start + at;
-                let body_start = body_start.unwrap_or(close).min(close);
-                return (
-                    Details {
-                        summary,
-                        body_start,
-                        body_end: close,
-                        start,
-                        end: close + CLOSE_TAG.len(),
-                        unterminated: false,
-                    },
-                    cursor + 1,
-                );
-            }
-            from = at + CLOSE_TAG.len();
-        }
-
-        last_end = line_start + line.len();
-        cursor += 1;
-    }
-    (
-        Details {
-            summary,
-            body_start: body_start.unwrap_or(start).min(last_end),
-            body_end: last_end,
-            start,
-            end: last_end,
-            unterminated: true,
-        },
-        cursor,
-    )
-}
-
-/// The summary text and the byte offset just past `</summary>` on this line.
-fn extract_summary(line: &str) -> Option<(String, usize)> {
-    let open = line.find("<summary>")? + "<summary>".len();
-    let close = line[open..].find("</summary>")? + open;
-    Some((
-        line[open..close].trim().to_string(),
-        close + "</summary>".len(),
-    ))
 }
 
 // ------------------------------------------------------- inline extensions
@@ -527,13 +224,6 @@ fn post_process_blocks(blocks: &mut [Block]) {
                     post_process_inlines(&mut cell.content);
                     expand_cell_breaks(&mut cell.content);
                 }
-            }
-            Block::Code(c) if c.language.as_deref() == Some("mermaid") => {
-                *block = Block::Diagram(DiagramBlock::new(
-                    "mermaid".to_string(),
-                    c.text.clone(),
-                    c.range,
-                ));
             }
             _ => {}
         }

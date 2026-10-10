@@ -3,7 +3,72 @@
 //! Matching runs against what is on screen rather than the Markdown source, so
 //! a query finds what the reader can actually see.
 
-use std::borrow::Cow;
+use std::ops::{Deref, Range};
+
+#[derive(Debug, Clone, Default)]
+pub struct SearchIndex {
+    lines: Vec<String>,
+    folded: Vec<FoldedLine>,
+}
+
+#[derive(Debug, Clone)]
+struct FoldedLine {
+    text: String,
+    changes: Vec<(Range<usize>, Range<usize>)>,
+}
+
+impl FoldedLine {
+    fn new(text: &str) -> Self {
+        let mut changes = Vec::new();
+        let mut folded = 0;
+        for (original, ch) in text.char_indices() {
+            let length: usize = ch.to_lowercase().map(char::len_utf8).sum();
+            if length != ch.len_utf8() {
+                changes.push((folded..folded + length, original..original + ch.len_utf8()));
+            }
+            folded += length;
+        }
+        Self {
+            text: text.to_lowercase(),
+            changes,
+        }
+    }
+
+    fn original_offset(&self, offset: usize, end: bool) -> usize {
+        let index = self
+            .changes
+            .partition_point(|(folded, _)| folded.end <= offset);
+        if let Some((folded, original)) = self.changes.get(index)
+            && offset >= folded.start
+        {
+            return if end && offset > folded.start {
+                original.end
+            } else {
+                original.start
+            };
+        }
+        match index.checked_sub(1).and_then(|i| self.changes.get(i)) {
+            Some((folded, original)) => offset - folded.end + original.end,
+            None => offset,
+        }
+    }
+}
+
+impl FromIterator<String> for SearchIndex {
+    fn from_iter<T: IntoIterator<Item = String>>(lines: T) -> Self {
+        let lines: Vec<String> = lines.into_iter().collect();
+        let folded = lines.iter().map(|text| FoldedLine::new(text)).collect();
+        Self { lines, folded }
+    }
+}
+
+impl Deref for SearchIndex {
+    type Target = [String];
+
+    fn deref(&self) -> &Self::Target {
+        &self.lines
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Match {
@@ -44,12 +109,14 @@ impl Search {
 
     /// Matches on a given rendered line, for highlighting.
     pub fn matches_on(&self, line: usize) -> impl Iterator<Item = &Match> {
-        self.matches.iter().filter(move |m| m.line == line)
+        let start = self.matches.partition_point(|m| m.line < line);
+        let end = self.matches.partition_point(|m| m.line <= line);
+        self.matches[start..end].iter()
     }
 
     /// Apply a query. An empty query keeps the previous one, which is what
     /// pressing Enter on an empty search prompt should do.
-    pub fn set_query(&mut self, query: &str, lines: &[String]) {
+    pub fn set_query(&mut self, query: &str, lines: &SearchIndex) {
         if !query.is_empty() {
             self.query = query.to_string();
         }
@@ -59,7 +126,7 @@ impl Search {
     /// Apply a query as typed, including an empty one. Used by the prompt while
     /// it is being edited, where deleting the last character has to clear the
     /// matches rather than fall back to the previous query.
-    pub fn replace_query(&mut self, query: &str, lines: &[String]) {
+    pub fn replace_query(&mut self, query: &str, lines: &SearchIndex) {
         self.query = query.to_string();
         self.recompute(lines);
     }
@@ -72,7 +139,7 @@ impl Search {
     /// Re-run the search. Called after a re-layout, since rendered line numbers
     /// change with width. The cursor lands on the first match; callers that
     /// want it near the reader follow with `select_from`.
-    pub fn recompute(&mut self, lines: &[String]) {
+    pub fn recompute(&mut self, lines: &SearchIndex) {
         self.matches.clear();
         if self.query.is_empty() {
             self.current = None;
@@ -86,20 +153,18 @@ impl Search {
         } else {
             self.query.clone()
         };
-        for (index, line) in lines.iter().enumerate() {
-            let haystack: Cow<'_, str> = if fold {
-                Cow::Owned(line.to_lowercase())
+        for (index, line) in lines.lines.iter().enumerate() {
+            let folded = &lines.folded[index];
+            let haystack = if fold {
+                folded.text.as_str()
             } else {
-                Cow::Borrowed(line.as_str())
+                line.as_str()
             };
-            // Lowercasing can change byte length, so offsets are only used when
-            // the mapping is one to one; otherwise the whole line highlights.
-            let same_layout = haystack.len() == line.len();
             let mut from = 0usize;
             while let Some(found) = haystack[from..].find(&needle) {
                 let start = from + found;
                 let end = start + needle.len();
-                self.matches.push(if same_layout {
+                self.matches.push(if !fold {
                     Match {
                         line: index,
                         start,
@@ -108,8 +173,8 @@ impl Search {
                 } else {
                     Match {
                         line: index,
-                        start: 0,
-                        end: line.len(),
+                        start: folded.original_offset(start, false),
+                        end: folded.original_offset(end, true),
                     }
                 });
                 from = end.max(start + 1);
@@ -164,12 +229,26 @@ impl Search {
 mod tests {
     use super::*;
 
-    fn lines() -> Vec<String> {
+    #[test]
+    fn folded_offsets_map_back_to_original_characters() {
+        let lines: SearchIndex = vec!["İẞ tail".to_string()].into_iter().collect();
+        let mut search = Search::default();
+        search.set_query("ß", &lines);
+        let found = search.current().unwrap();
+        assert_eq!(&lines[0][found.start..found.end], "ẞ");
+        search.set_query("i", &lines);
+        let found = search.current().unwrap();
+        assert_eq!(&lines[0][found.start..found.end], "İ");
+    }
+
+    fn lines() -> SearchIndex {
         vec![
             "The quick brown fox".to_string(),
             "jumps over".to_string(),
             "the lazy dog, the end".to_string(),
         ]
+        .into_iter()
+        .collect()
     }
 
     #[test]
@@ -182,7 +261,9 @@ mod tests {
 
     #[test]
     fn a_capital_in_the_query_asks_for_that_capital() {
-        let lines = vec!["The quick".to_string(), "the lazy".to_string()];
+        let lines: SearchIndex = vec!["The quick".to_string(), "the lazy".to_string()]
+            .into_iter()
+            .collect();
         let mut s = Search::default();
         s.set_query("The", &lines);
         assert_eq!(s.count(), 1);
@@ -252,7 +333,9 @@ mod tests {
 
     #[test]
     fn japanese_queries_match() {
-        let lines = vec!["日本語のテキスト".to_string(), "英語の text".to_string()];
+        let lines: SearchIndex = vec!["日本語のテキスト".to_string(), "英語の text".to_string()]
+            .into_iter()
+            .collect();
         let mut s = Search::default();
         s.set_query("テキスト", &lines);
         assert_eq!(s.count(), 1);

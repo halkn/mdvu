@@ -326,6 +326,9 @@ impl<'a> Builder<'a> {
                 let plain = plain_text(&content);
                 self.push_block(Block::Heading(HeadingBlock {
                     level,
+                    atx: self.source.as_str()[start..end]
+                        .trim_start()
+                        .starts_with('#'),
                     content,
                     plain,
                     range,

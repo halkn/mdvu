@@ -53,7 +53,8 @@ pub fn draw(frame: &mut Frame, lines: &[RenderedLine], state: &PagerState, ctx: 
     let [body, status] =
         Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(frame.area());
 
-    let rows: Vec<RatLine> = (state.top..(state.top + state.height).min(lines.len()))
+    let rows: Vec<RatLine> = (state.viewport.top
+        ..(state.viewport.top + state.viewport.height).min(lines.len()))
         .map(|index| {
             let search = state.visible_search();
             let current = search.current();
@@ -69,7 +70,12 @@ pub fn draw(frame: &mut Frame, lines: &[RenderedLine], state: &PagerState, ctx: 
                 })
                 .collect();
             let initial = state.initial_line == Some(index);
-            let spans = visible(&lines[index], state.left, body.width as usize, &highlights);
+            let spans = visible(
+                &lines[index],
+                state.viewport.left,
+                body.width as usize,
+                &highlights,
+            );
             RatLine::from(
                 spans
                     .into_iter()
@@ -93,13 +99,13 @@ pub fn draw(frame: &mut Frame, lines: &[RenderedLine], state: &PagerState, ctx: 
         })
         .collect();
 
-    let current = source_line_at(lines, state.top).unwrap_or(0);
+    let current = source_line_at(lines, state.viewport.top).unwrap_or(0);
     frame.render_widget(Paragraph::new(rows), body);
     frame.render_widget(
         status_bar(state, ctx, current, status.width as usize),
         status,
     );
-    match state.mode {
+    match state.mode() {
         Mode::Outline => draw_outline(frame, state, ctx, body),
         Mode::Help => draw_help(frame, state, ctx, body),
         _ => {}
@@ -288,15 +294,15 @@ fn status_bar<'a>(
     width: usize,
 ) -> Paragraph<'a> {
     let style = convert(ctx.theme.style(StyleRole::Status));
-    if state.mode == Mode::Search {
+    if let Some(session) = state.search_session() {
         let tally = tally(state.visible_search());
         // The tally sits where it will sit once the search is confirmed, so
         // confirming does not make it jump across the bar. A prompt too long to
         // share the line keeps the room: the caret must stay on screen.
         let room = display_width(&tally) + 2;
-        let show_tally = !state.input.is_empty() && width > room + MIN_PROMPT;
+        let show_tally = !session.input.is_empty() && width > room + MIN_PROMPT;
         let budget = if show_tally { width - room } else { width };
-        let mut spans = prompt_spans(state, style, budget);
+        let mut spans = prompt_spans(session, style, budget);
         if show_tally {
             let used: usize = spans.iter().map(|s| display_width(&s.content)).sum();
             let gap = width.saturating_sub(used + display_width(&tally)).max(1);
@@ -353,13 +359,20 @@ const MIN_PROMPT: usize = 8;
 /// The prompt with its caret, windowed to `budget` columns. `TerminalGuard`
 /// owns cursor visibility and keeps it hidden, so the caret is a cell drawn
 /// against the status bar rather than the terminal cursor.
-fn prompt_spans<'a>(state: &PagerState, style: RatStyle, budget: usize) -> Vec<RatSpan<'a>> {
-    let caret = state.caret.min(state.input.len());
-    let (under, after) = match state.input[caret..].graphemes(true).next() {
-        Some(grapheme) => (grapheme.to_string(), &state.input[caret + grapheme.len()..]),
+fn prompt_spans<'a>(
+    session: &crate::pager::search_session::SearchSession,
+    style: RatStyle,
+    budget: usize,
+) -> Vec<RatSpan<'a>> {
+    let caret = session.caret.min(session.input.len());
+    let (under, after) = match session.input[caret..].graphemes(true).next() {
+        Some(grapheme) => (
+            grapheme.to_string(),
+            &session.input[caret + grapheme.len()..],
+        ),
         None => (" ".to_string(), ""),
     };
-    let before = format!("/{}", &state.input[..caret]);
+    let before = format!("/{}", &session.input[..caret]);
 
     // A query wider than the bar scrolls: the caret stays at the right edge
     // instead of being typed into an invisible tail.
@@ -493,6 +506,37 @@ pub fn widest_line(lines: &[RenderedLine]) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_plain_pager_has_no_colors_and_keeps_the_current_match_visible() {
+        let lines = vec![line("needle")];
+        let texts = lines.iter().map(RenderedLine::text).collect();
+        let mut state = PagerState::new(1, 6, 4, 30);
+        state.apply(crate::pager::state::Action::StartSearch);
+        for c in "needle".chars() {
+            state.insert_search_char(c, &texts);
+        }
+        state.confirm_search(&texts);
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(30, 5)).unwrap();
+        let ctx = ViewContext {
+            title: "doc.md",
+            flavor: "gfm",
+            source_lines: 1,
+            diagnostics: 0,
+            theme: Theme::new(crate::layout::theme::Variant::Dark)
+                .with_color(crate::output::ColorChoice::Plain),
+        };
+        terminal
+            .draw(|frame| draw(frame, &lines, &state, &ctx))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        for cell in &buffer.content {
+            assert_eq!(cell.fg, RatColor::Reset);
+            assert_eq!(cell.bg, RatColor::Reset);
+        }
+        assert!(buffer[(0, 0)].modifier.contains(Modifier::REVERSED));
+    }
     use crate::layout::RenderedSpan;
 
     fn line(text: &str) -> RenderedLine {
@@ -565,7 +609,7 @@ mod tests {
 
     /// Draw a frame and return it as text, one string per row.
     fn screen(state: &PagerState, lines: &[RenderedLine]) -> Vec<String> {
-        let backend = ratatui::backend::TestBackend::new(state.width as u16, 12);
+        let backend = ratatui::backend::TestBackend::new(state.viewport.width as u16, 12);
         let mut terminal = ratatui::Terminal::new(backend).expect("test backend");
         let ctx = ViewContext {
             title: "doc.md",
@@ -620,7 +664,7 @@ mod tests {
     #[test]
     fn the_current_match_is_drawn_apart_from_the_others() {
         let lines = vec![line("needle and needle")];
-        let texts: Vec<String> = lines.iter().map(|l| l.text()).collect();
+        let texts: crate::pager::search::SearchIndex = lines.iter().map(|l| l.text()).collect();
         let mut state = PagerState::new(1, 20, 3, 40);
         state.apply(crate::pager::state::Action::StartSearch);
         for c in "needle".chars() {
@@ -672,7 +716,7 @@ mod tests {
         let lines: Vec<RenderedLine> = (0..12)
             .map(|i| line(if i % 4 == 0 { "needle" } else { "x" }))
             .collect();
-        let texts: Vec<String> = lines.iter().map(|l| l.text()).collect();
+        let texts: crate::pager::search::SearchIndex = lines.iter().map(|l| l.text()).collect();
         let mut state = PagerState::new(lines.len(), 20, 5, 40);
 
         state.apply(crate::pager::state::Action::StartSearch);
@@ -700,11 +744,14 @@ mod tests {
         let mut state = PagerState::new(10, 20, 5, 40);
         state.apply(crate::pager::state::Action::StartSearch);
         for c in "abc".chars() {
-            state.insert_search_char(c, &[]);
+            state.insert_search_char(c, &crate::pager::search::SearchIndex::default());
         }
-        state.edit_search(crate::pager::state::SearchEdit::CaretStart, &[]);
+        state.edit_search(
+            crate::pager::state::SearchEdit::CaretStart,
+            &crate::pager::search::SearchIndex::default(),
+        );
 
-        let spans = prompt_spans(&state, style, 40);
+        let spans = prompt_spans(state.search_session().unwrap(), style, 40);
         assert_eq!(spans[0].content, "/");
         assert_eq!(spans[1].content, "a");
         assert_ne!(spans[1].style, spans[0].style);
@@ -719,10 +766,10 @@ mod tests {
         let mut state = PagerState::new(10, 20, 5, 40);
         state.apply(crate::pager::state::Action::StartSearch);
         for c in "abcdefghijklmnopqrstuvwxyz".chars() {
-            state.insert_search_char(c, &[]);
+            state.insert_search_char(c, &crate::pager::search::SearchIndex::default());
         }
 
-        let spans = prompt_spans(&state, style, 10);
+        let spans = prompt_spans(state.search_session().unwrap(), style, 10);
         let width: usize = spans.iter().map(|s| display_width(&s.content)).sum();
         assert!(width <= 10, "{width}");
         // The caret is still on screen, at the end of what is shown.
@@ -745,7 +792,7 @@ mod tests {
         state.scroll_help(
             help::ENTRIES.len() as isize,
             help::ENTRIES.len(),
-            help_rows(state.height),
+            help_rows(state.viewport.height),
         );
         let scrolled = screen(&state, &lines).join("\n");
         assert!(scrolled.contains("Quit"), "{scrolled}");

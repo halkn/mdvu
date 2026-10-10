@@ -16,7 +16,7 @@ use clap::ValueEnum;
 
 use crate::diagnostic::Diagnostic;
 use crate::flavor::Flavor;
-use crate::markdown::model::{Block, DiagramBlock, Document};
+use crate::markdown::model::{Block, DiagramBlock, DiagramOutput, Document};
 use mermaid::{DiagramRenderOptions, DiagramRenderer, MermanRenderer};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, ValueEnum)]
@@ -51,6 +51,7 @@ fn resolve_blocks(
 ) {
     for block in blocks.iter_mut() {
         if let Block::Diagram(diagram) = block {
+            diagram.output = DiagramOutput::Source;
             if flavor == Flavor::AzureDevops {
                 diagram.warnings = azure_compat::warnings(&diagram.source);
                 for warning in &diagram.warnings {
@@ -61,7 +62,7 @@ fn resolve_blocks(
                 // Source and off never invoke the renderer.
                 MermaidMode::Source | MermaidMode::Off => {}
                 MermaidMode::Image => match renderer.render_png(&diagram.source) {
-                    Ok(png) => diagram.png = Some(png),
+                    Ok(png) => diagram.output = DiagramOutput::Image(png),
                     // Text may still draw it, and reports the error if not.
                     Err(_) => render_text(diagram, renderer, MermaidMode::Unicode, diagnostics),
                 },
@@ -83,7 +84,7 @@ fn render_text(
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     match renderer.render(&diagram.source, &DiagramRenderOptions { mode }) {
-        Ok(rendered) => diagram.rendered = Some(rendered.lines),
+        Ok(rendered) => diagram.output = DiagramOutput::Text(rendered.lines),
         Err(error) => {
             // A failed diagram falls back to its source, never failing the document.
             let severity = if error.unsupported {
@@ -95,8 +96,10 @@ fn render_text(
                 format!("mermaid: {}", error.message),
                 Some(diagram.range),
             ));
-            diagram.unsupported = error.unsupported;
-            diagram.error = Some(error.message);
+            diagram.output = DiagramOutput::Failed {
+                message: error.message,
+                unsupported: error.unsupported,
+            };
         }
     }
 }

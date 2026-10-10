@@ -4,19 +4,19 @@
 use std::rc::Rc;
 
 use crate::diagram::MermaidMode;
+use crate::layout::PreparedDocument;
 use crate::layout::document::{BORDER, expand_tabs, line, reserve};
-use crate::layout::inline::InlineContext;
 use crate::layout::wrap::{display_width, wrap_spans};
 use crate::layout::{RenderedLine, RenderedSpan, StyleRole};
-use crate::markdown::model::DiagramBlock;
+use crate::markdown::model::{DiagramBlock, DiagramOutput};
 
 pub(super) fn diagram(
     d: &DiagramBlock,
     width: usize,
-    ctx: &InlineContext,
+    ctx: &PreparedDocument,
     out: &mut Vec<RenderedLine>,
 ) {
-    if ctx.mermaid == MermaidMode::Off {
+    if ctx.inline().mermaid == MermaidMode::Off {
         out.push(line(
             vec![RenderedSpan::new(
                 format!("[{} diagram omitted]", d.language),
@@ -40,8 +40,12 @@ pub(super) fn diagram(
         }
     }
 
-    if let Some(message) = &d.error {
-        error_fallback(d, message, width, out);
+    if let DiagramOutput::Failed {
+        message,
+        unsupported,
+    } = &d.output
+    {
+        error_fallback(d, message, *unsupported, width, out);
         return;
     }
 
@@ -50,9 +54,9 @@ pub(super) fn diagram(
         return;
     }
 
-    let (header, body): (String, Vec<String>) = match &d.rendered {
-        Some(lines) => (format!("╭─ {}", d.language), lines.clone()),
-        None => (
+    let (header, body): (String, Vec<String>) = match &d.output {
+        DiagramOutput::Text(lines) => (format!("╭─ {}", d.language), lines.clone()),
+        _ => (
             format!("╭─ {} (source)", d.language),
             d.source.lines().map(str::to_string).collect(),
         ),
@@ -83,16 +87,21 @@ pub(super) fn diagram(
 fn drawable_diagram(
     d: &DiagramBlock,
     width: usize,
-    ctx: &InlineContext,
+    ctx: &PreparedDocument,
 ) -> Option<Rc<crate::image::Placement>> {
-    let png = d.png.as_ref()?;
-    crate::image::from_png(png.bytes.clone(), ctx.images?, width, png.css_width)
+    ctx.image(d.range, width)
 }
 
 /// Show a short error and the original source, so a broken diagram never hides
 /// what the author wrote.
-fn error_fallback(d: &DiagramBlock, message: &str, width: usize, out: &mut Vec<RenderedLine>) {
-    let (title, role) = if d.unsupported {
+fn error_fallback(
+    d: &DiagramBlock,
+    message: &str,
+    unsupported: bool,
+    width: usize,
+    out: &mut Vec<RenderedLine>,
+) {
+    let (title, role) = if unsupported {
         ("Mermaid diagram not supported as text", StyleRole::Warning)
     } else {
         ("Mermaid render error", StyleRole::Error)

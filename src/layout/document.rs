@@ -5,15 +5,16 @@
 //! continuation lines align with content rather than with the marker.
 
 use std::rc::Rc;
+use unicode_segmentation::UnicodeSegmentation;
 
-use crate::layout::inline::{InlineContext, segments, spans};
+use crate::layout::inline::{segments, spans};
 use crate::layout::table::layout_table;
 use crate::layout::wrap::{display_width, wrap_spans};
 use crate::layout::{LayoutOptions, RenderedDocument, RenderedLine, RenderedSpan, StyleRole};
-use crate::layout::{diagram, highlight};
+use crate::layout::{PreparedDocument, diagram};
 use crate::markdown::model::{
-    Block, CodeBlock, DetailsBlock, Document, FootnoteBlock, HeadingBlock, Inline, ListBlock,
-    ParagraphBlock, PlaceholderBlock, QuoteBlock, RawHtmlBlock, TocBlock,
+    Block, CodeBlock, DetailsBlock, FootnoteBlock, HeadingBlock, ListBlock, ParagraphBlock,
+    PlaceholderBlock, QuoteBlock, RawHtmlBlock, TocBlock,
 };
 use crate::source::SourceRange;
 
@@ -21,16 +22,18 @@ const TAB_STOP: usize = 4;
 
 pub(super) const BORDER: &str = "│ ";
 
-pub fn layout_document(
-    document: &Document,
-    options: LayoutOptions,
-    ctx: &InlineContext,
-) -> RenderedDocument {
+pub fn layout_document(document: &PreparedDocument, options: LayoutOptions) -> RenderedDocument {
     let mut lines = Vec::new();
-    layout_blocks(&document.blocks, options.width, 0, ctx, &mut lines);
+    layout_blocks(
+        &document.document().blocks,
+        options.width,
+        0,
+        document,
+        &mut lines,
+    );
     RenderedDocument {
         lines,
-        diagnostics: document.diagnostics.clone(),
+        diagnostics: document.document().diagnostics.clone(),
     }
 }
 
@@ -40,7 +43,7 @@ fn layout_blocks(
     blocks: &[Block],
     width: usize,
     depth: usize,
-    ctx: &InlineContext,
+    ctx: &PreparedDocument,
     out: &mut Vec<RenderedLine>,
 ) {
     for (index, block) in blocks.iter().enumerate() {
@@ -61,7 +64,7 @@ fn layout_block(
     block: &Block,
     width: usize,
     depth: usize,
-    ctx: &InlineContext,
+    ctx: &PreparedDocument,
     out: &mut Vec<RenderedLine>,
 ) {
     match block {
@@ -70,7 +73,7 @@ fn layout_block(
         Block::List(l) => list(l, width, depth, ctx, out),
         Block::Quote(q) => quote(q, width, depth, ctx, out),
         Block::Code(c) => code(c, ctx, out),
-        Block::Table(t) => out.extend(layout_table(t, width, ctx)),
+        Block::Table(t) => out.extend(layout_table(t, width, ctx.inline())),
         Block::HorizontalRule(range) => out.push(line(
             vec![RenderedSpan::new("─".repeat(width), StyleRole::Muted)],
             *range,
@@ -123,12 +126,12 @@ fn details(
     d: &DetailsBlock,
     width: usize,
     depth: usize,
-    ctx: &InlineContext,
+    ctx: &PreparedDocument,
     out: &mut Vec<RenderedLine>,
 ) {
     let marker = "▾ ";
     let marker_width = display_width(marker);
-    let summary = spans(&d.summary, ctx);
+    let summary = spans(&d.summary, ctx.inline());
     for (index, mut line_spans) in wrap_spans(&summary, width.saturating_sub(marker_width).max(1))
         .into_iter()
         .enumerate()
@@ -202,11 +205,11 @@ fn placeholder(p: &PlaceholderBlock, width: usize, out: &mut Vec<RenderedLine>) 
     }
 }
 
-fn heading(h: &HeadingBlock, width: usize, ctx: &InlineContext, out: &mut Vec<RenderedLine>) {
+fn heading(h: &HeadingBlock, width: usize, ctx: &PreparedDocument, out: &mut Vec<RenderedLine>) {
     let level = h.level.min(6);
     let marker = format!("{} ", "#".repeat(level as usize));
     let marker_width = display_width(&marker);
-    let content = spans(&h.content, ctx);
+    let content = spans(&h.content, ctx.inline());
     let wrapped = wrap_spans(&content, width.saturating_sub(marker_width).max(1));
 
     for (index, mut line_spans) in wrapped.into_iter().enumerate() {
@@ -235,12 +238,17 @@ fn heading(h: &HeadingBlock, width: usize, ctx: &InlineContext, out: &mut Vec<Re
     }
 }
 
-fn paragraph(p: &ParagraphBlock, width: usize, ctx: &InlineContext, out: &mut Vec<RenderedLine>) {
+fn paragraph(
+    p: &ParagraphBlock,
+    width: usize,
+    ctx: &PreparedDocument,
+    out: &mut Vec<RenderedLine>,
+) {
     if let Some(placement) = drawable_image(p, width, ctx) {
         reserve(&placement, p.range, out);
         return;
     }
-    for segment in segments(&p.content, ctx) {
+    for segment in segments(&p.content, ctx.inline()) {
         for line_spans in wrap_spans(&segment, width) {
             out.push(line(line_spans, p.range));
         }
@@ -272,19 +280,9 @@ pub(super) fn reserve(
 fn drawable_image(
     p: &ParagraphBlock,
     width: usize,
-    ctx: &InlineContext,
+    ctx: &PreparedDocument,
 ) -> Option<Rc<crate::image::Placement>> {
-    let support = ctx.images?;
-    let [Inline::Image(image)] = p.content.as_slice() else {
-        return None;
-    };
-    crate::image::resolve(
-        &image.dest,
-        ctx.base_dir.as_deref(),
-        ctx.content_root.as_deref(),
-        support,
-        width,
-    )
+    ctx.image(p.range, width)
 }
 
 /// Bullets by nesting depth. All three are East Asian Width Ambiguous, the same
@@ -296,7 +294,7 @@ fn list(
     l: &ListBlock,
     width: usize,
     depth: usize,
-    ctx: &InlineContext,
+    ctx: &PreparedDocument,
     out: &mut Vec<RenderedLine>,
 ) {
     // A list is loose when some item carries more than one block of its own,
@@ -364,7 +362,7 @@ fn quote(
     q: &QuoteBlock,
     width: usize,
     depth: usize,
-    ctx: &InlineContext,
+    ctx: &PreparedDocument,
     out: &mut Vec<RenderedLine>,
 ) {
     let role = match q.kind {
@@ -374,7 +372,7 @@ fn quote(
     if let Some(kind) = q.kind {
         out.push(RenderedLine {
             spans: vec![RenderedSpan::new(
-                format!("╭─ {}{}", ctx.icons.alert(kind), kind.label()),
+                format!("╭─ {}{}", ctx.inline().icons.alert(kind), kind.label()),
                 role,
             )],
             source_range: Some(q.range),
@@ -413,9 +411,9 @@ fn quote(
     }
 }
 
-fn code(c: &CodeBlock, ctx: &InlineContext, out: &mut Vec<RenderedLine>) {
+fn code(c: &CodeBlock, ctx: &PreparedDocument, out: &mut Vec<RenderedLine>) {
     let header = match &c.language {
-        Some(language) => format!("╭─ {}{language}", ctx.icons.language(language)),
+        Some(language) => format!("╭─ {}{language}", ctx.inline().icons.language(language)),
         None => "╭─".to_string(),
     };
     out.push(RenderedLine {
@@ -424,26 +422,9 @@ fn code(c: &CodeBlock, ctx: &InlineContext, out: &mut Vec<RenderedLine>) {
         no_wrap: true,
         image: None,
     });
-    // Tabs are expanded first so highlighting and the drawn columns agree.
-    let body: String = c
-        .text
-        .lines()
-        .map(expand_tabs)
-        .collect::<Vec<_>>()
-        .join("\n");
-    let highlighted = ctx
-        .highlight
-        .then_some(c.language.as_deref())
-        .flatten()
-        .and_then(|language| highlight::highlight(language, &body));
-
-    for (index, text) in body.lines().enumerate() {
-        let content = match &highlighted {
-            Some(lines) => lines[index].clone(),
-            None => vec![RenderedSpan::new(text, StyleRole::Code)],
-        };
+    for content in ctx.code(c.range) {
         let mut spans = vec![RenderedSpan::new(BORDER, StyleRole::CodeBorder)];
-        spans.extend(content);
+        spans.extend(content.iter().cloned());
         out.push(RenderedLine {
             spans,
             source_range: Some(c.range),
@@ -463,7 +444,7 @@ fn footnote(
     f: &FootnoteBlock,
     width: usize,
     depth: usize,
-    ctx: &InlineContext,
+    ctx: &PreparedDocument,
     out: &mut Vec<RenderedLine>,
 ) {
     let marker = format!("[^{}] ", f.label);
@@ -518,14 +499,15 @@ pub(super) fn line(spans: Vec<RenderedSpan>, range: SourceRange) -> RenderedLine
 pub(super) fn expand_tabs(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut column = 0usize;
-    for ch in text.chars() {
-        if ch == '\t' {
+    for grapheme in text.graphemes(true) {
+        if grapheme == "\t" {
             let advance = TAB_STOP - (column % TAB_STOP);
             out.extend(std::iter::repeat_n(' ', advance));
             column += advance;
         } else {
-            out.push(ch);
-            column += display_width(&ch.to_string());
+            let visible = crate::text::visible(grapheme);
+            out.push_str(&visible);
+            column += display_width(&visible);
         }
     }
     out
@@ -537,7 +519,8 @@ mod tests {
     use crate::flavor::Flavor;
     use crate::image::{CellSize, ImageSupport, Protocol};
     use crate::layout::icons::IconSet;
-    use crate::markdown::model::{AlertKind, DiagramPng};
+    use crate::layout::inline::InlineContext;
+    use crate::markdown::model::{AlertKind, DiagramOutput, DiagramPng};
     use crate::source::SourceText;
     use std::io::Write;
     use std::path::Path;
@@ -571,7 +554,10 @@ mod tests {
 
     fn render(markdown: &str, ctx: &InlineContext) -> RenderedDocument {
         let document = crate::flavor::parse(SourceText::new(markdown.to_string()), Flavor::Gfm);
-        layout_document(&document, LayoutOptions::new(80), ctx)
+        layout_document(
+            &PreparedDocument::new(document, ctx.clone()),
+            LayoutOptions::new(80),
+        )
     }
 
     #[test]
@@ -607,11 +593,14 @@ mod tests {
         bytes.extend_from_slice(&300u32.to_be_bytes());
         bytes.extend_from_slice(&60u32.to_be_bytes());
         bytes.extend_from_slice(&[8, 6, 0, 0, 0]);
-        d.png = Some(DiagramPng {
-            bytes,
+        d.output = DiagramOutput::Image(DiagramPng {
+            bytes: bytes.into(),
             css_width: 150,
         });
-        layout_document(&document, LayoutOptions::new(80), ctx)
+        layout_document(
+            &PreparedDocument::new(document, ctx.clone()),
+            LayoutOptions::new(80),
+        )
     }
 
     #[test]

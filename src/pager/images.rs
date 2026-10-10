@@ -14,6 +14,56 @@ use crate::image::{MAX_ROWS, Placement, Protocol, protocol};
 use crate::layout::RenderedLine;
 use crate::layout::wrap::display_width;
 
+pub struct ImageSession<W: Write = std::io::Stdout> {
+    out: W,
+    protocol: Option<Protocol>,
+    shown: Vec<Placed>,
+    sent: HashSet<u32>,
+}
+
+impl ImageSession {
+    pub fn new(protocol: Option<Protocol>) -> Self {
+        Self::with_writer(protocol, std::io::stdout())
+    }
+}
+
+impl<W: Write> ImageSession<W> {
+    fn with_writer(protocol: Option<Protocol>, out: W) -> Self {
+        Self {
+            out,
+            protocol,
+            shown: Vec::new(),
+            sent: HashSet::new(),
+        }
+    }
+
+    pub fn needs_repaint(&self, wanted: &[Placed]) -> bool {
+        wanted != self.shown && needs_repaint(&self.shown)
+    }
+
+    pub fn draw(&mut self, wanted: Vec<Placed>) -> Result<()> {
+        if wanted != self.shown {
+            let bytes = frame(&self.shown, &wanted, &mut self.sent);
+            write(&mut self.out, &bytes)?;
+            self.shown = wanted;
+        }
+        Ok(())
+    }
+
+    pub fn release(&mut self) -> Result<()> {
+        let bytes = release_bytes(self.protocol, &self.sent);
+        write(&mut self.out, &bytes)?;
+        self.sent.clear();
+        Ok(())
+    }
+}
+
+impl<W: Write> Drop for ImageSession<W> {
+    fn drop(&mut self) {
+        let _ = self.release();
+    }
+}
+
 /// The rows of an image on screen and the cell their top left corner sits in.
 #[derive(Debug, Clone)]
 pub struct Placed {
@@ -103,15 +153,6 @@ pub fn needs_repaint(shown: &[Placed]) -> bool {
 /// Removes every image and frees what the terminal stores, including images
 /// scrolled off screen. Used when the layout is rebuilt, since its placements
 /// are new, and on the way out.
-pub fn release(protocol: Option<Protocol>, sent: &mut HashSet<u32>) -> Result<()> {
-    let bytes = release_bytes(protocol, sent);
-    sent.clear();
-    match bytes.is_empty() {
-        true => Ok(()),
-        false => write(&bytes),
-    }
-}
-
 fn release_bytes(protocol: Option<Protocol>, sent: &HashSet<u32>) -> String {
     if protocol != Some(Protocol::Kitty) {
         return String::new();
@@ -119,16 +160,6 @@ fn release_bytes(protocol: Option<Protocol>, sent: &HashSet<u32>) -> String {
     let mut ids: Vec<u32> = sent.iter().copied().collect();
     ids.sort_unstable();
     ids.into_iter().map(protocol::free).collect()
-}
-
-/// Replaces the images in `before` with those in `wanted`. Called after the
-/// frame, so nothing `ratatui` writes lands on top.
-pub fn draw(before: &[Placed], wanted: &[Placed], sent: &mut HashSet<u32>) -> Result<()> {
-    let bytes = frame(before, wanted, sent);
-    match bytes.is_empty() {
-        true => Ok(()),
-        false => write(&bytes),
-    }
 }
 
 /// The bytes that turn `before` into `wanted`. A kitty image is stored the
@@ -159,8 +190,10 @@ fn frame(before: &[Placed], wanted: &[Placed], sent: &mut HashSet<u32>) -> Strin
     out
 }
 
-fn write(bytes: &str) -> Result<()> {
-    let mut out = std::io::stdout().lock();
+fn write(out: &mut impl Write, bytes: &str) -> Result<()> {
+    if bytes.is_empty() {
+        return Ok(());
+    }
     out.write_all(bytes.as_bytes())
         .and_then(|()| out.flush())
         .map_err(|source| AppError::Output { source })
@@ -172,6 +205,73 @@ mod tests {
     use crate::image::{CellSize, ImageSupport, Protocol};
     use crate::layout::RenderedSpan;
     use crate::layout::StyleRole;
+    use std::cell::{Cell, RefCell};
+
+    #[derive(Clone, Default)]
+    struct TestWriter {
+        bytes: Rc<RefCell<Vec<u8>>>,
+        fail: Rc<Cell<bool>>,
+    }
+
+    impl Write for TestWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if self.fail.replace(false) {
+                return Err(std::io::Error::other("draw failed"));
+            }
+            self.bytes.borrow_mut().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn resizing_repositions_without_resending_and_drop_frees_data() {
+        let bytes = include_bytes!("../../tests/fixtures/gfm/.attachments/architecture.png");
+        let asset = crate::image::ImageAsset::from_png(Rc::from(bytes.as_slice()), 400).unwrap();
+        let support = ImageSupport {
+            protocol: Protocol::Kitty,
+            cell: CellSize {
+                width: 10,
+                height: 20,
+            },
+        };
+        let writer = TestWriter::default();
+        let mut session = ImageSession::with_writer(Some(Protocol::Kitty), writer.clone());
+        let wide = asset.place(support, 80).unwrap();
+        let id = wide.id;
+        session
+            .draw(visible(&document(wide, 0, ""), 0, 0, 80, 24))
+            .unwrap();
+        let first = writer.bytes.borrow().len();
+        let narrow = asset.place(support, 20).unwrap();
+        session
+            .draw(visible(&document(narrow, 0, ""), 0, 0, 20, 24))
+            .unwrap();
+        let output = String::from_utf8(writer.bytes.borrow().clone()).unwrap();
+        assert!(!output[first..].contains("a=t"));
+        assert!(output[first..].contains("a=p"));
+        drop(session);
+        let output = String::from_utf8(writer.bytes.borrow().clone()).unwrap();
+        assert!(output.ends_with(&protocol::free(id)));
+    }
+
+    #[test]
+    fn a_failed_draw_still_releases_registered_images() {
+        let writer = TestWriter::default();
+        writer.fail.set(true);
+        let image = placement(10, 4);
+        let id = image.id;
+        let mut session = ImageSession::with_writer(Some(Protocol::Kitty), writer.clone());
+        assert!(
+            session
+                .draw(visible(&document(image, 0, ""), 0, 0, 80, 24))
+                .is_err()
+        );
+        drop(session);
+        assert_eq!(*writer.bytes.borrow(), protocol::free(id).as_bytes());
+    }
 
     fn placement(cols: usize, rows: usize) -> Rc<Placement> {
         placement_for(Protocol::Kitty, cols, rows)

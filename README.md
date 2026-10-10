@@ -419,6 +419,8 @@ up, because each glyph is measured as one display column.
   because `mdvu` has no concept of includes.
 - `mdvu` never opens a link or runs an external command. Clicking is the
   terminal's job.
+- Control characters in document text are displayed as literal hex escapes
+  such as `\x1b`, including inside code blocks. Source positions are preserved.
 - Syntax highlighting covers the languages shipped with `syntect` and classifies
   tokens into seven roles; it is not an editor-grade highlighter.
 - No mouse support, no user-defined themes and no configurable key bindings.

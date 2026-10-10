@@ -1,13 +1,7 @@
-use assert_cmd::Command;
-use predicates::prelude::*;
+mod common;
 
-fn mdvu() -> Command {
-    let mut command = Command::cargo_bin("mdvu").expect("binary should be built");
-    // Ignore whatever configuration the developer has; tests that need one
-    // point `MDVU_CONFIG` at a temporary file of their own.
-    command.env("MDVU_CONFIG", "");
-    command
-}
+use common::mdvu;
+use predicates::prelude::*;
 
 #[test]
 fn renders_a_file_argument() {
@@ -413,4 +407,20 @@ fn a_document_on_stdin_has_no_directory_to_read_images_from() {
     let out = String::from_utf8(out).expect("output is utf-8");
     assert!(!out.contains("\x1b_G"));
     assert!(out.contains("[image: a]"));
+}
+#[test]
+fn input_control_sequences_are_visible_text() {
+    let source = "```text\nhello\x1b[31mworld\x1b[0m\x07\n```\n";
+    let output = mdvu()
+        .args(["--paging", "never", "--color", "never", "-"])
+        .write_stdin(source)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let text = String::from_utf8(output).unwrap();
+    assert!(!text.contains('\x1b'));
+    assert!(!text.contains('\x07'));
+    assert!(text.contains("hello\\x1b[31mworld\\x1b[0m\\x07"));
 }

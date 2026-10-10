@@ -3,7 +3,6 @@
 //! The document is parsed once before the loop starts. Layout re-runs only when
 //! the terminal size changes or the file is reloaded, never per frame.
 
-use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -17,13 +16,14 @@ use crate::flavor::Flavor;
 use crate::input;
 use crate::layout::inline::InlineContext;
 use crate::layout::theme::Theme;
-use crate::layout::{LayoutOptions, RenderedDocument, layout_document};
+use crate::layout::{LayoutOptions, PreparedDocument, RenderedDocument, layout_document};
 use crate::markdown::model::{Document, headings};
 use crate::pager::TerminalGuard;
 use crate::pager::event::{Input, map};
 use crate::pager::help;
-use crate::pager::images::{self, Placed};
-use crate::pager::state::{OutlineItem, PagerState, rendered_line_for_source, source_line_at};
+use crate::pager::images::{self, ImageSession};
+use crate::pager::search::SearchIndex;
+use crate::pager::state::{OutlineItem, PagerState, ViewportAnchor, rendered_line_for_source};
 use crate::pager::view::{ViewContext, draw, help_rows, widest_line};
 use crate::pager::watch::Watch;
 
@@ -70,7 +70,7 @@ pub fn run(input: PagerInput) -> Result<()> {
 
 fn event_loop(input: PagerInput) -> Result<()> {
     let PagerInput {
-        mut document,
+        document,
         inline,
         theme,
         title,
@@ -80,6 +80,7 @@ fn event_loop(input: PagerInput) -> Result<()> {
         watched,
     } = input;
 
+    let mut document = PreparedDocument::new(document, inline);
     let backend = CrosstermBackend::new(std::io::stdout());
     let mut terminal = Terminal::new(backend).map_err(|source| AppError::Terminal { source })?;
 
@@ -96,7 +97,7 @@ fn event_loop(input: PagerInput) -> Result<()> {
         .map_err(|source| AppError::Terminal { source })?;
     let content_width = |columns: u16| width_override.unwrap_or_else(|| (columns as usize).max(1));
     let mut width = content_width(area.width);
-    let mut rendered = layout_document(&document, LayoutOptions::new(width), &inline);
+    let mut rendered = layout_document(&document, LayoutOptions::new(width));
     let mut texts = line_texts(&rendered);
 
     let body_height = area.height.saturating_sub(1) as usize;
@@ -109,33 +110,31 @@ fn event_loop(input: PagerInput) -> Result<()> {
         area.width as usize,
     );
 
-    state.set_outline(outline(&document, &rendered));
+    state.set_outline(outline(document.document(), &rendered));
     // What the terminal is currently showing, so an unchanged frame does not
     // re-send image payloads that can be megabytes each.
-    let mut shown: Vec<Placed> = Vec::new();
-    // Placements a kitty terminal already stores, so scrolling only re-places.
-    let mut sent: HashSet<u32> = HashSet::new();
-    let protocol = inline.images.map(|support| support.protocol);
+    let mut images = ImageSession::new(document.inline().images.map(|support| support.protocol));
 
     if let Some(source_line) = start_line
         && let Some(index) = rendered_line_for_source(&rendered.lines, source_line)
     {
         state.initial_line = Some(index);
-        state.top = index.saturating_sub(state.height / 2).min(state.max_top());
+        state.viewport.top = index
+            .saturating_sub(state.viewport.height / 2)
+            .min(state.max_top());
     }
 
     loop {
         let wanted = images::visible(
             &rendered.lines,
-            state.top,
-            state.left,
-            state.width,
-            state.height,
+            state.viewport.top,
+            state.viewport.left,
+            state.viewport.width,
+            state.viewport.height,
         );
-        let images_changed = wanted != shown;
         // Kitty removes its own placements. iTerm2 draws into the cells, so the
         // only way back is to make `ratatui` repaint the whole screen.
-        if images_changed && images::needs_repaint(&shown) {
+        if images.needs_repaint(&wanted) {
             terminal
                 .clear()
                 .map_err(|source| AppError::Terminal { source })?;
@@ -144,17 +143,14 @@ fn event_loop(input: PagerInput) -> Result<()> {
         let ctx = ViewContext {
             title: &title,
             flavor: &flavor,
-            source_lines: document.source.line_count(),
+            source_lines: document.document().source.line_count(),
             diagnostics: rendered.diagnostics.len(),
             theme,
         };
         terminal
             .draw(|frame| draw(frame, &rendered.lines, &state, &ctx))
             .map_err(|source| AppError::Terminal { source })?;
-        if images_changed {
-            images::draw(&shown, &wanted, &mut sent)?;
-            shown = wanted;
-        }
+        images.draw(wanted)?;
 
         // Reloading happens between frames, never during one, so the frame loop
         // still does no parsing.
@@ -163,19 +159,29 @@ fn event_loop(input: PagerInput) -> Result<()> {
         {
             match watched.reload() {
                 Ok(reloaded) => {
-                    document = reloaded;
-                    let anchor = source_line_at(&rendered.lines, state.top);
-                    rendered = layout_document(&document, LayoutOptions::new(width), &inline);
-                    images::release(protocol, &mut sent)?;
+                    images.release()?;
+                    document = PreparedDocument::new(reloaded, document.inline().clone());
+                    let anchor = state.anchor(&rendered.lines);
+                    rendered = layout_document(&document, LayoutOptions::new(width));
                     texts = line_texts(&rendered);
-                    let viewport = (state.height, state.width);
-                    restore(&mut state, &rendered, &texts, &document, anchor, viewport);
+                    let viewport = (state.viewport.height, state.viewport.width);
+                    restore(
+                        &mut state,
+                        &rendered,
+                        &texts,
+                        document.document(),
+                        anchor,
+                        viewport,
+                    );
                     state.status = Some("reloaded".to_string());
                 }
                 // A file being rewritten can be briefly missing or invalid.
                 // The previous rendering stays on screen and the next event
                 // tries again.
-                Err(error) => state.status = Some(format!("reload failed: {error}")),
+                Err(error) => {
+                    state.status =
+                        Some(crate::text::visible(&format!("reload failed: {error}")).into_owned())
+                }
             }
         }
 
@@ -186,21 +192,26 @@ fn event_loop(input: PagerInput) -> Result<()> {
             Event::Key(key) if key.is_press() => {
                 if !handle_key(&mut state, key, &texts) {
                     // Leave no image on screen or stored in the terminal.
-                    images::release(protocol, &mut sent)?;
+                    images.release()?;
                     return Ok(());
                 }
             }
             Event::Resize(columns, rows) => {
                 // Keep the reader's place across a re-layout by remembering the
                 // source line at the top of the viewport.
-                let anchor = source_line_at(&rendered.lines, state.top);
+                let anchor = state.anchor(&rendered.lines);
                 width = content_width(columns);
-                rendered = layout_document(&document, LayoutOptions::new(width), &inline);
-                // Every placement is new after a re-layout.
-                images::release(protocol, &mut sent)?;
+                rendered = layout_document(&document, LayoutOptions::new(width));
                 texts = line_texts(&rendered);
                 let viewport = (rows.saturating_sub(1) as usize, columns as usize);
-                restore(&mut state, &rendered, &texts, &document, anchor, viewport);
+                restore(
+                    &mut state,
+                    &rendered,
+                    &texts,
+                    document.document(),
+                    anchor,
+                    viewport,
+                );
             }
             _ => {}
         }
@@ -212,9 +223,9 @@ fn event_loop(input: PagerInput) -> Result<()> {
 fn restore(
     state: &mut PagerState,
     rendered: &RenderedDocument,
-    texts: &[String],
+    texts: &SearchIndex,
     document: &Document,
-    anchor: Option<usize>,
+    anchor: ViewportAnchor,
     (height, width): (usize, usize),
 ) {
     state.resize(
@@ -224,20 +235,15 @@ fn restore(
         width,
     );
     state.set_outline(outline(document, rendered));
-    state.initial_line = None;
-    if let Some(line) = anchor
-        && let Some(index) = rendered_line_for_source(&rendered.lines, line)
-    {
-        state.top = index.min(state.max_top());
-    }
+    state.restore_anchor(&rendered.lines, anchor);
     // After the viewport is back where it was, so the current match is chosen
     // from the reader's place in the new layout.
     state.recompute_searches(texts);
 }
 
 /// Returns `false` when the pager should exit.
-fn handle_key(state: &mut PagerState, key: event::KeyEvent, texts: &[String]) -> bool {
-    match map(key, state.mode) {
+fn handle_key(state: &mut PagerState, key: event::KeyEvent, texts: &SearchIndex) -> bool {
+    match map(key, state.mode()) {
         Input::Navigate(action) => return state.apply(action),
         Input::SearchChar(c) => state.insert_search_char(c, texts),
         Input::SearchEdit(edit) => state.edit_search(edit, texts),
@@ -247,7 +253,7 @@ fn handle_key(state: &mut PagerState, key: event::KeyEvent, texts: &[String]) ->
         Input::OutlineConfirm => state.confirm_outline(),
         Input::OutlineCancel => state.cancel_outline(),
         Input::HelpScroll(delta) => {
-            state.scroll_help(delta, help::ENTRIES.len(), help_rows(state.height))
+            state.scroll_help(delta, help::ENTRIES.len(), help_rows(state.viewport.height))
         }
         Input::HelpClose => state.close_help(),
         Input::Ignored => {}
@@ -255,7 +261,7 @@ fn handle_key(state: &mut PagerState, key: event::KeyEvent, texts: &[String]) ->
     true
 }
 
-fn line_texts(rendered: &RenderedDocument) -> Vec<String> {
+fn line_texts(rendered: &RenderedDocument) -> SearchIndex {
     rendered.lines.iter().map(|l| l.text()).collect()
 }
 
@@ -268,7 +274,7 @@ fn outline(document: &Document, rendered: &RenderedDocument) -> Vec<OutlineItem>
             rendered_line_for_source(&rendered.lines, heading.range.line_start).map(|line| {
                 OutlineItem {
                     level: heading.level,
-                    text: heading.plain.clone(),
+                    text: crate::text::visible(&heading.plain).into_owned(),
                     line,
                 }
             })
@@ -282,7 +288,7 @@ mod tests {
     use crate::pager::state::{Action, Mode};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-    fn texts() -> Vec<String> {
+    fn texts() -> SearchIndex {
         (0..50)
             .map(|i| {
                 if i == 30 {
@@ -302,14 +308,14 @@ mod tests {
     fn typing_a_search_and_confirming_moves_the_viewport() {
         let mut state = PagerState::new(50, 10, 10, 40);
         assert!(handle_key(&mut state, key(KeyCode::Char('/')), &texts()));
-        assert_eq!(state.mode, Mode::Search);
+        assert_eq!(state.mode(), Mode::Search);
         for c in "target".chars() {
             handle_key(&mut state, key(KeyCode::Char(c)), &texts());
         }
-        assert_eq!(state.input, "target");
+        assert_eq!(state.search_session().unwrap().input, "target");
         handle_key(&mut state, key(KeyCode::Enter), &texts());
-        assert_eq!(state.mode, Mode::Normal);
-        assert!(state.top <= 30 && 30 < state.top + state.height);
+        assert_eq!(state.mode(), Mode::Normal);
+        assert!(state.viewport.top <= 30 && 30 < state.viewport.top + state.viewport.height);
     }
 
     #[test]
@@ -320,7 +326,7 @@ mod tests {
             handle_key(&mut state, key(KeyCode::Char(c)), &texts());
         }
         handle_key(&mut state, key(KeyCode::Backspace), &texts());
-        assert_eq!(state.input, "target");
+        assert_eq!(state.search_session().unwrap().input, "target");
     }
 
     #[test]
@@ -334,7 +340,7 @@ mod tests {
         let mut state = PagerState::new(50, 10, 10, 40);
         state.apply(Action::StartSearch);
         assert!(handle_key(&mut state, key(KeyCode::Esc), &texts()));
-        assert_eq!(state.mode, Mode::Normal);
+        assert_eq!(state.mode(), Mode::Normal);
         // Esc again, now in normal mode, quits.
         assert!(!handle_key(&mut state, key(KeyCode::Esc), &texts()));
     }

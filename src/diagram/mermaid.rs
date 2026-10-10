@@ -78,7 +78,7 @@ impl DiagramRenderer for MermanRenderer {
         match HeadlessRenderer::new().render_svg_resvg_safe_sync(source) {
             Ok(Some(svg)) => super::raster::svg_to_png(&svg)
                 .map(|raster| DiagramPng {
-                    bytes: raster.png,
+                    bytes: raster.png.into(),
                     css_width: raster.css_width,
                 })
                 .map_err(|message| DiagramError {

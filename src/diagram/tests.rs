@@ -28,18 +28,17 @@ const GRAPH: &str = "::: mermaid\ngraph LR\n  A[Start] --> B[Done]\n:::\n";
 fn unicode_is_the_default_rendering() {
     let doc = document(GRAPH, MermaidMode::Unicode, Flavor::AzureDevops);
     let d = only_diagram(&doc);
-    let text = d.rendered.as_ref().expect("should render").join("\n");
+    let text = d.rendered().expect("should render").join("\n");
     assert!(text.contains("Start"), "{text}");
     assert!(!text.is_ascii(), "expected Unicode drawing: {text}");
-    assert!(d.error.is_none());
+    assert!(d.error().is_none());
 }
 
 #[test]
 fn ascii_mode_renders_without_wide_characters() {
     let doc = document(GRAPH, MermaidMode::Ascii, Flavor::AzureDevops);
     let text = only_diagram(&doc)
-        .rendered
-        .as_ref()
+        .rendered()
         .expect("should render")
         .join("\n");
     assert!(text.is_ascii(), "{text}");
@@ -49,14 +48,14 @@ fn ascii_mode_renders_without_wide_characters() {
 fn source_mode_never_renders() {
     let d = document(GRAPH, MermaidMode::Source, Flavor::AzureDevops);
     let diagram = only_diagram(&d);
-    assert!(diagram.rendered.is_none());
+    assert!(diagram.rendered().is_none());
     assert!(diagram.source.contains("graph LR"));
 }
 
 #[test]
 fn off_mode_never_renders() {
     let d = document(GRAPH, MermaidMode::Off, Flavor::AzureDevops);
-    assert!(only_diagram(&d).rendered.is_none());
+    assert!(only_diagram(&d).rendered().is_none());
 }
 
 #[test]
@@ -68,8 +67,8 @@ fn fenced_and_container_syntax_render_the_same() {
         Flavor::AzureDevops,
     );
     assert_eq!(
-        only_diagram(&container).rendered,
-        only_diagram(&fenced).rendered
+        only_diagram(&container).rendered(),
+        only_diagram(&fenced).rendered()
     );
 }
 
@@ -81,8 +80,7 @@ fn japanese_labels_are_preserved() {
         Flavor::AzureDevops,
     );
     let text = only_diagram(&doc)
-        .rendered
-        .as_ref()
+        .rendered()
         .expect("should render")
         .join("\n");
     assert!(text.contains("開始"), "{text}");
@@ -97,8 +95,8 @@ fn invalid_syntax_falls_back_to_source_without_failing_the_document() {
         Flavor::AzureDevops,
     );
     let d = only_diagram(&doc);
-    assert!(d.rendered.is_none());
-    assert!(d.error.is_some());
+    assert!(d.rendered().is_none());
+    assert!(d.error().is_some());
     // The body survives and the rest of the document still renders.
     assert!(d.source.contains("graph LR"));
     assert!(doc.blocks.iter().any(|b| matches!(b, Block::Heading(_))));
@@ -117,7 +115,7 @@ fn an_unsupported_diagram_family_falls_back_to_source() {
         Flavor::AzureDevops,
     );
     let d = only_diagram(&doc);
-    assert!(d.error.is_some(), "expected a fallback");
+    assert!(d.error().is_some(), "expected a fallback");
     assert!(d.source.contains("stateDiagram-v2"));
 }
 
@@ -149,7 +147,7 @@ fn a_flagged_diagram_still_renders() {
     );
     let d = only_diagram(&doc);
     assert!(!d.warnings.is_empty());
-    assert!(d.rendered.is_some(), "warnings must not block rendering");
+    assert!(d.rendered().is_some(), "warnings must not block rendering");
 }
 
 #[test]
@@ -175,7 +173,7 @@ fn diagrams_inside_containers_are_resolved() {
     let has_rendered = q
         .blocks
         .iter()
-        .any(|b| matches!(b, Block::Diagram(d) if d.rendered.is_some()));
+        .any(|b| matches!(b, Block::Diagram(d) if d.rendered().is_some()));
     assert!(has_rendered);
 }
 
@@ -183,11 +181,11 @@ fn diagrams_inside_containers_are_resolved() {
 fn image_mode_draws_a_png_instead_of_text() {
     let doc = document(GRAPH, MermaidMode::Image, Flavor::AzureDevops);
     let d = only_diagram(&doc);
-    let png = d.png.as_ref().expect("should rasterise");
+    let png = d.png().expect("should rasterise");
     assert!(png.bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
     assert!(png.css_width > 0);
-    assert!(d.rendered.is_none());
-    assert!(d.error.is_none());
+    assert!(d.rendered().is_none());
+    assert!(d.error().is_none());
 }
 
 #[test]
@@ -195,8 +193,8 @@ fn a_diagram_that_cannot_be_a_picture_reports_like_text() {
     let broken = "::: mermaid\ngraph LR\n  A -->\n  -->\n:::\n";
     let doc = document(broken, MermaidMode::Image, Flavor::AzureDevops);
     let d = only_diagram(&doc);
-    assert!(d.png.is_none());
-    assert!(d.error.is_some());
+    assert!(d.png().is_none());
+    assert!(d.error().is_some());
     assert!(
         doc.diagnostics
             .iter()
