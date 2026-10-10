@@ -1,19 +1,28 @@
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::image::{ImageAsset, Placement};
-use crate::markdown::model::{Block, DiagramOutput, Document, Inline};
+use crate::markdown::model::{Block, CodeBlock, DiagramOutput, Document, Inline};
 use crate::source::SourceRange;
 
 use super::document::expand_tabs;
 use super::inline::InlineContext;
 use super::{RenderedSpan, StyleRole, highlight};
 
+/// Prepared resources are keyed by the block's whole byte range: leaf blocks
+/// never share one, while a start offset alone can be shared.
+type Key = (usize, usize);
+
+fn key(range: SourceRange) -> Key {
+    (range.byte_start, range.byte_end)
+}
+
 pub struct PreparedDocument {
     document: Document,
     inline: InlineContext,
-    code: HashMap<usize, Vec<Vec<RenderedSpan>>>,
-    images: HashMap<usize, Rc<ImageAsset>>,
+    code: HashMap<Key, Vec<Vec<RenderedSpan>>>,
+    images: HashMap<Key, Rc<ImageAsset>>,
 }
 
 impl PreparedDocument {
@@ -29,8 +38,13 @@ impl PreparedDocument {
         }
     }
 
-    pub fn code(&self, range: SourceRange) -> &[Vec<RenderedSpan>] {
-        &self.code[&range.byte_start]
+    /// A block that preparation did not reach is highlighted here instead, so
+    /// layout never depends on visiting the tree the same way.
+    pub fn code(&self, block: &CodeBlock) -> Cow<'_, [Vec<RenderedSpan>]> {
+        match self.code.get(&key(block.range)) {
+            Some(spans) => Cow::Borrowed(spans),
+            None => Cow::Owned(code_spans(block, &self.inline)),
+        }
     }
 
     pub fn document(&self) -> &Document {
@@ -43,7 +57,7 @@ impl PreparedDocument {
 
     pub fn image(&self, range: SourceRange, width: usize) -> Option<Rc<Placement>> {
         self.images
-            .get(&range.byte_start)?
+            .get(&key(range))?
             .place(self.inline.images?, width)
     }
 }
@@ -51,29 +65,13 @@ impl PreparedDocument {
 fn prepare(
     blocks: &[Block],
     inline: &InlineContext,
-    code: &mut HashMap<usize, Vec<Vec<RenderedSpan>>>,
-    images: &mut HashMap<usize, Rc<ImageAsset>>,
+    code: &mut HashMap<Key, Vec<Vec<RenderedSpan>>>,
+    images: &mut HashMap<Key, Rc<ImageAsset>>,
 ) {
     for block in blocks {
         match block {
             Block::Code(block) => {
-                let body = block
-                    .text
-                    .lines()
-                    .map(expand_tabs)
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                let spans = inline
-                    .highlight
-                    .then_some(block.language.as_deref())
-                    .flatten()
-                    .and_then(|language| highlight::highlight(language, &body))
-                    .unwrap_or_else(|| {
-                        body.lines()
-                            .map(|text| vec![RenderedSpan::new(text, StyleRole::Code)])
-                            .collect()
-                    });
-                code.insert(block.range.byte_start, spans);
+                code.insert(key(block.range), code_spans(block, inline));
             }
             Block::Paragraph(block) if inline.images.is_some() => {
                 if let [Inline::Image(image)] = block.content.as_slice()
@@ -83,14 +81,14 @@ fn prepare(
                         inline.content_root.as_deref(),
                     )
                 {
-                    images.insert(block.range.byte_start, asset);
+                    images.insert(key(block.range), asset);
                 }
             }
             Block::Diagram(block) if inline.images.is_some() => {
                 if let DiagramOutput::Image(png) = &block.output
                     && let Some(asset) = ImageAsset::from_png(Rc::clone(&png.bytes), png.css_width)
                 {
-                    images.insert(block.range.byte_start, asset);
+                    images.insert(key(block.range), asset);
                 }
             }
             _ => {}
@@ -101,12 +99,51 @@ fn prepare(
     }
 }
 
+fn code_spans(block: &CodeBlock, inline: &InlineContext) -> Vec<Vec<RenderedSpan>> {
+    let body = block
+        .text
+        .lines()
+        .map(expand_tabs)
+        .collect::<Vec<_>>()
+        .join("\n");
+    inline
+        .highlight
+        .then_some(block.language.as_deref())
+        .flatten()
+        .and_then(|language| highlight::highlight(language, &body))
+        .unwrap_or_else(|| {
+            body.lines()
+                .map(|text| vec![RenderedSpan::new(text, StyleRole::Code)])
+                .collect()
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::flavor::Flavor;
     use crate::image::{CellSize, ImageSupport, Protocol};
     use crate::layout::{LayoutOptions, layout_document};
+
+    #[test]
+    fn a_code_block_preparation_missed_is_still_laid_out() {
+        let prepared = PreparedDocument::new(
+            crate::document::build(
+                "text\n".into(),
+                Flavor::Gfm,
+                crate::diagram::MermaidMode::Off,
+            ),
+            InlineContext::default(),
+        );
+        let block = CodeBlock {
+            language: None,
+            text: "a\tb\n".into(),
+            range: prepared.document().blocks[0].range(),
+        };
+        let spans = prepared.code(&block);
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0][0].text, "a   b");
+    }
 
     #[test]
     fn controls_are_visible_without_changing_source_ranges_or_tab_columns() {

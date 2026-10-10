@@ -425,7 +425,7 @@ fn code(c: &CodeBlock, ctx: &PreparedDocument, out: &mut Vec<RenderedLine>) {
         no_wrap: true,
         image: None,
     });
-    for content in ctx.code(c.range) {
+    for content in ctx.code(c).iter() {
         let mut spans = vec![RenderedSpan::new(BORDER, StyleRole::CodeBorder)];
         spans.extend(content.iter().cloned());
         out.push(RenderedLine {
