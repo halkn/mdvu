@@ -445,7 +445,7 @@ tag; the tag must match the `version` in `Cargo.toml`.
 
 Per-module design decisions — why kinsoku is applied while chunks are built, why
 Mermaid renders once before layout, why `--watch` watches the parent directory —
-live in [`.claude/rules/`](.claude/rules), next to the code they constrain.
+live in [`docs/`](docs).
 
 ## License
 

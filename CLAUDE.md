@@ -10,7 +10,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 文書の解析・リソース準備と、画面幅に依存する配置を分離する。リサイズで入力ファイルの再読込や構文解析を起こさない。フレーバー差は `flavor/` に閉じ、IR に端末や具体的なスタイルへの依存を持ち込まない。
 
-各段の判断基準は `.claude/rules/rendering.md` と `.claude/rules/runtime.md` を参照する。画像関連の変更では `docs/mermaid-image.md` も読む。
+各段の判断基準は `docs/` にある。`src/markdown/`・`src/flavor/`・`src/diagram/`・`src/layout/` と render の snapshot を触る前に `docs/rendering.md` を、`src/pager/`・CLI・config を触る前に `docs/runtime.md` を、画像関連の変更では `docs/mermaid-image.md` を読む。
 
 ## 常に守ること
 

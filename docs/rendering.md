@@ -1,15 +1,6 @@
----
-paths:
-  - "src/markdown/**"
-  - "src/flavor/**"
-  - "src/diagram/**"
-  - "src/layout/**"
-  - "tests/render.rs"
-  - "tests/fixtures/**"
-  - "tests/snapshots/**"
----
-
 # パース〜レイアウトの決定事項
+
+`src/markdown/`・`src/flavor/`・`src/diagram/`・`src/layout/`・`tests/render.rs`・`tests/fixtures/`・`tests/snapshots/` を触る前に読む。
 
 ## IR とフレーバー
 

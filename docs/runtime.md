@@ -1,14 +1,6 @@
----
-paths:
-  - "src/pager/**"
-  - "src/cli.rs"
-  - "src/config.rs"
-  - "src/main.rs"
-  - "src/input.rs"
-  - "tests/cli.rs"
----
-
 # CLI と pager の決定事項
+
+`src/pager/`・`src/cli.rs`・`src/config.rs`・`src/main.rs`・`src/input.rs`・`tests/cli.rs` を触る前に読む。
 
 ## 終了コードと不正な組み合わせ
 
