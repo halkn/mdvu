@@ -56,6 +56,15 @@ impl<W: Write> ImageSession<W> {
         self.sent.clear();
         Ok(())
     }
+
+    /// For a resize, where `ratatui` clears the whole screen. A clear may take
+    /// stored image data with it, so the same ids are freed and sent again
+    /// rather than only placed.
+    pub fn screen_cleared(&mut self) -> Result<()> {
+        self.release()?;
+        self.shown.clear();
+        Ok(())
+    }
 }
 
 impl<W: Write> Drop for ImageSession<W> {
@@ -227,7 +236,7 @@ mod tests {
     }
 
     #[test]
-    fn resizing_repositions_without_resending_and_drop_frees_data() {
+    fn resizing_keeps_the_id_but_sends_the_data_again() {
         let bytes = include_bytes!("../../tests/fixtures/gfm/.attachments/architecture.png");
         let asset = crate::image::ImageAsset::from_png(Rc::from(bytes.as_slice()), 400).unwrap();
         let support = ImageSupport {
@@ -245,16 +254,17 @@ mod tests {
             .draw(visible(&document(wide, 0, ""), 0, 0, 80, 24))
             .unwrap();
         let first = writer.bytes.borrow().len();
+        session.screen_cleared().unwrap();
         let narrow = asset.place(support, 20).unwrap();
+        assert_eq!(narrow.id, id);
         session
             .draw(visible(&document(narrow, 0, ""), 0, 0, 20, 24))
             .unwrap();
         let output = String::from_utf8(writer.bytes.borrow().clone()).unwrap();
-        assert!(!output[first..].contains("a=t"));
-        assert!(output[first..].contains("a=p"));
-        drop(session);
-        let output = String::from_utf8(writer.bytes.borrow().clone()).unwrap();
-        assert!(output.ends_with(&protocol::free(id)));
+        let after = &output[first..];
+        let freed = after.find(&protocol::free(id)).expect("freed");
+        let sent = after.find("a=t").expect("sent again");
+        assert!(freed < sent);
     }
 
     #[test]

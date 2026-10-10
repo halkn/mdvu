@@ -197,6 +197,7 @@ fn event_loop(input: PagerInput) -> Result<()> {
                 }
             }
             Event::Resize(columns, rows) => {
+                images.screen_cleared()?;
                 // Keep the reader's place across a re-layout by remembering the
                 // source line at the top of the viewport.
                 let anchor = state.anchor(&rendered.lines);
