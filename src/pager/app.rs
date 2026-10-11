@@ -125,13 +125,16 @@ fn event_loop(input: PagerInput) -> Result<()> {
     }
 
     loop {
-        let wanted = images::visible(
-            &rendered.lines,
-            state.viewport.top,
-            state.viewport.left,
-            state.viewport.width,
-            state.viewport.height,
-        );
+        let wanted = match state.shows_images() {
+            true => images::visible(
+                &rendered.lines,
+                state.viewport.top,
+                state.viewport.left,
+                state.viewport.width,
+                state.viewport.height,
+            ),
+            false => Vec::new(),
+        };
         // Kitty removes its own placements. iTerm2 draws into the cells, so the
         // only way back is to make `ratatui` repaint the whole screen.
         if images.needs_repaint(&wanted) {
