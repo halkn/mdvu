@@ -421,6 +421,8 @@ up, because each glyph is measured as one display column.
   terminal's job.
 - Control characters in document text are displayed as literal hex escapes
   such as `\x1b`, including inside code blocks. Source positions are preserved.
+  Tabs and line breaks in prose are shown as spaces, and tabs in code blocks
+  are expanded.
 - Syntax highlighting covers the languages shipped with `syntect` and classifies
   tokens into seven roles; it is not an editor-grade highlighter.
 - No mouse support, no user-defined themes and no configurable key bindings.
