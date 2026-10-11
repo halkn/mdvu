@@ -64,17 +64,28 @@ impl SourceText {
         }
     }
 
+    /// The range of one 1-based line, clamped into the document.
+    pub fn line_range(&self, line: usize) -> SourceRange {
+        let line = line.clamp(1, self.line_count());
+        SourceRange {
+            byte_start: self.line_starts[line - 1],
+            byte_end: self
+                .line_starts
+                .get(line)
+                .copied()
+                .unwrap_or(self.text.len()),
+            line_start: line,
+            line_end: line,
+        }
+    }
+
     /// Text of a 1-based line, without its line terminator.
     #[cfg(test)]
     pub fn line(&self, line: usize) -> Option<&str> {
-        let index = line.checked_sub(1)?;
-        let start = *self.line_starts.get(index)?;
-        let end = self
-            .line_starts
-            .get(index + 1)
-            .copied()
-            .unwrap_or(self.text.len());
-        Some(self.text[start..end].trim_end_matches(['\n', '\r']))
+        (1..=self.line_count()).contains(&line).then(|| {
+            let range = self.line_range(line);
+            self.text[range.byte_start..range.byte_end].trim_end_matches(['\n', '\r'])
+        })
     }
 }
 

@@ -11,6 +11,7 @@
 - alert の判定は `Options::ENABLE_GFM` に任せ、フレーバーで分けない。Azure DevOps Wiki も同じ `> [!NOTE]` 記法を持つため、`markdown/parser.rs` の共通経路に置くのが両フレーバーで正しい。未知の種別（`[!FOO]`）は `kind: None` の普通の引用になり、マーカーは本文に残る。
 - ブロック木の再帰は `Block::children()` / `children_mut()` だけを通す。走査ごとに container を列挙すると、どこまで降りるかが走査ごとにずれる。container を足すときはこの 2 つに足す。
 - すべての user-authored block は `SourceRange`（byte 範囲 + 1-based 行）を持つ。`--line` と `--watch` の読み位置保持がこれに依存するので、新しい block を足すときも必ず持たせる。
+- 描画行がソース行と 1 対 1 に対応する block（コードブロックの本文と fence、表の各行と区切り行、生 HTML）は、block 全体ではなくその行の range を描画行に持たせる。block 全体の range だと、長いコードブロックの途中で読んでいてもリサイズや reload のたびに block の先頭へ戻り、`--line` も先頭に着地する。復元側の規則は `docs/runtime.md` の「レイアウトの再実行」にある。
 - 未終端 `:::` container の body は **最初の空行で打ち切り**、diagnostic として報告する。markdown-it 系のように文書末尾まで伸ばすと、`::: mermaid` の閉じ忘れ 1 個で以降の本文全体が diagram body に吸収され、viewer として最も見たいものが読めなくなる。
 - 閉じマーカー探索は code fence を認識する。fence 内の `:::` はリテラルであり closer ではない。fence 内の Azure 記法も同様にリテラルのまま残す。
 - `[[_TOC_]]` は大文字小文字を区別し、最初の 1 個だけ展開する（2 個目は「無視された」と表示）。収集するのは `#` 見出しのみ。

@@ -6,6 +6,7 @@
 use super::search_session::SearchSession;
 use crate::layout::RenderedLine;
 use crate::pager::search::{Search, SearchIndex};
+use crate::source::SourceRange;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
@@ -61,8 +62,23 @@ enum Interaction {
 
 #[derive(Debug, Clone, Copy)]
 pub struct ViewportAnchor {
-    top: Option<usize>,
-    search: Option<usize>,
+    top: Option<Anchor>,
+    search: Option<Anchor>,
+}
+
+/// A rendered line identified by the source it shows, so it can be found again
+/// in a layout of another width or of a reloaded file.
+#[derive(Debug, Clone, Copy)]
+struct Anchor {
+    range: SourceRange,
+    /// Which run showing `range` this is, counted from the top. A heading and
+    /// its `[[_TOC_]]` entry share a range, as do a list item's separators.
+    occurrence: usize,
+    /// Position within the run of lines that share `range`. A wrapped
+    /// paragraph is one source range however many lines it takes, so the
+    /// position is kept in proportion to the run's length.
+    offset: usize,
+    len: usize,
 }
 
 /// One heading in the outline overlay.
@@ -177,19 +193,16 @@ impl PagerState {
 
     pub fn anchor(&self, lines: &[RenderedLine]) -> ViewportAnchor {
         ViewportAnchor {
-            top: source_line_at(lines, self.viewport.top),
+            top: anchor_at(lines, self.viewport.top),
             search: self
                 .search_session()
-                .and_then(|session| source_line_at(lines, session.origin.0)),
+                .and_then(|session| anchor_at(lines, session.origin.0)),
         }
     }
 
     pub fn restore_anchor(&mut self, lines: &[RenderedLine], anchor: ViewportAnchor) {
         self.initial_line = None;
-        if let Some(index) = anchor
-            .top
-            .and_then(|line| rendered_line_for_source(lines, line))
-        {
+        if let Some(index) = anchor.top.and_then(|anchor| line_for_anchor(lines, anchor)) {
             self.viewport.top = index.min(self.max_top());
         }
         let max_top = self.max_top();
@@ -197,7 +210,7 @@ impl PagerState {
         if let Some(session) = self.search_session_mut() {
             if let Some(index) = anchor
                 .search
-                .and_then(|line| rendered_line_for_source(lines, line))
+                .and_then(|anchor| line_for_anchor(lines, anchor))
             {
                 session.origin.0 = index.min(max_top);
             }
@@ -471,30 +484,84 @@ impl PagerState {
     }
 }
 
-/// The source line shown at the top of the viewport, used as a resize anchor.
+/// The source line shown at the top of the viewport, for the status bar.
 pub fn source_line_at(lines: &[RenderedLine], index: usize) -> Option<usize> {
-    lines
-        .iter()
-        .skip(index)
-        .find_map(|l| l.source_range.map(|r| r.line_start))
-        .or_else(|| {
-            lines[..index.min(lines.len())]
-                .iter()
-                .rev()
-                .find_map(|l| l.source_range.map(|r| r.line_start))
-        })
+    anchor_at(lines, index).map(|anchor| anchor.range.line_start)
 }
 
-/// Rendered line to open for a 1-based source line: the line covering it, else
-/// the nearest following mapped line, else the nearest preceding one.
+/// The anchor for the rendered line at `index`. A line with no source, such as
+/// a blank separator, is anchored to the nearest mapped line after it, or
+/// before it at the end of the document.
+fn anchor_at(lines: &[RenderedLine], index: usize) -> Option<Anchor> {
+    let mapped = |i: &usize| lines[*i].source_range.is_some();
+    let index = (index..lines.len())
+        .find(mapped)
+        .or_else(|| (0..index.min(lines.len())).rev().find(mapped))?;
+    let range = lines[index].source_range?;
+    let (start, len) = run(lines, index, range);
+    let occurrence = run_starts(lines, range)
+        .take_while(|&other| other < start)
+        .count();
+    Some(Anchor {
+        range,
+        occurrence,
+        offset: index - start,
+        len,
+    })
+}
+
+/// Where `anchor` is in `lines`: the same run when it is still there, else the
+/// line covering where its range started, which is what a reload that moved
+/// the bytes still finds.
+fn line_for_anchor(lines: &[RenderedLine], anchor: Anchor) -> Option<usize> {
+    let first = run_starts(lines, anchor.range)
+        .nth(anchor.occurrence)
+        .or_else(|| rendered_line_for_source(lines, anchor.range.line_start))?;
+    let range = lines[first].source_range?;
+    if range.line_start != anchor.range.line_start {
+        return Some(first);
+    }
+    let (start, len) = run(lines, first, range);
+    Some(start + anchor.offset * len / anchor.len)
+}
+
+/// First index and length of the run of lines around `index` that show `range`.
+fn run(lines: &[RenderedLine], index: usize, range: SourceRange) -> (usize, usize) {
+    let same = |i: usize| lines[i].source_range == Some(range);
+    let start = (0..index)
+        .rev()
+        .take_while(|&i| same(i))
+        .last()
+        .unwrap_or(index);
+    let end = (index..lines.len())
+        .take_while(|&i| same(i))
+        .last()
+        .unwrap_or(index);
+    (start, end - start + 1)
+}
+
+/// Where each run of lines showing `range` begins, in order.
+fn run_starts(lines: &[RenderedLine], range: SourceRange) -> impl Iterator<Item = usize> + '_ {
+    let same = move |i: usize| lines[i].source_range == Some(range);
+    (0..lines.len()).filter(move |&i| same(i) && (i == 0 || !same(i - 1)))
+}
+
+/// Rendered line to open for a 1-based source line: the narrowest line covering
+/// it, else the nearest following mapped line, else the nearest preceding one.
+///
+/// Narrowest rather than first, because a container's separator and title
+/// lines carry the whole container's range and come before its content.
 pub fn rendered_line_for_source(lines: &[RenderedLine], source_line: usize) -> Option<usize> {
     if lines.is_empty() {
         return None;
     }
-    if let Some(index) = lines.iter().position(|l| {
-        l.source_range
-            .is_some_and(|r| r.line_start <= source_line && source_line <= r.line_end)
-    }) {
+    if let Some((index, _)) = lines
+        .iter()
+        .enumerate()
+        .filter_map(|(index, l)| l.source_range.map(|r| (index, r)))
+        .filter(|(_, r)| r.line_start <= source_line && source_line <= r.line_end)
+        .min_by_key(|(_, r)| r.line_end - r.line_start)
+    {
         return Some(index);
     }
     if let Some(index) = lines
@@ -535,6 +602,119 @@ mod tests {
         state.cancel_search();
         assert_eq!(state.viewport.top, 4);
         assert_eq!(source_line_at(&new, state.viewport.top), Some(3));
+    }
+
+    fn lines_of(line_start: usize, line_end: usize, count: usize) -> Vec<RenderedLine> {
+        vec![mapped(line_start, line_end); count]
+    }
+
+    fn restored(old: &[RenderedLine], top: usize, new: &[RenderedLine]) -> usize {
+        let mut state = PagerState::new(old.len(), 10, 1, 40);
+        state.viewport.top = top;
+        let anchor = state.anchor(old);
+        state.resize(new.len(), 10, 1, 40);
+        state.restore_anchor(new, anchor);
+        state.viewport.top
+    }
+
+    #[test]
+    fn a_relayout_keeps_the_position_inside_a_block_in_proportion() {
+        let old = [lines_of(1, 1, 4), lines_of(3, 6, 10)].concat();
+        let new = [lines_of(1, 1, 2), lines_of(3, 6, 20)].concat();
+        // Six lines into a ten-line paragraph is six tenths of the way through it.
+        assert_eq!(restored(&old, 4 + 6, &new), 2 + 12);
+        // The last line stays the last line rather than spilling into the next block.
+        let after = [lines_of(1, 1, 2), lines_of(3, 6, 3), lines_of(8, 8, 5)].concat();
+        assert_eq!(restored(&old, 4 + 9, &after), 2 + 2);
+    }
+
+    #[test]
+    fn a_reload_that_shifts_bytes_still_finds_the_block_by_its_line() {
+        let block = |byte_start| SourceRange {
+            byte_start,
+            byte_end: byte_start + 10,
+            line_start: 5,
+            line_end: 8,
+        };
+        let line = |range| RenderedLine {
+            source_range: Some(range),
+            ..mapped(0, 0)
+        };
+        let old = [lines_of(1, 1, 2), vec![line(block(10)); 4]].concat();
+        let new = [lines_of(1, 1, 2), vec![line(block(14)); 4]].concat();
+        assert_eq!(restored(&old, 2 + 3, &new), 2 + 3);
+    }
+
+    fn layout(markdown: &str, flavor: crate::flavor::Flavor) -> Vec<RenderedLine> {
+        let document =
+            crate::document::build(markdown.into(), flavor, crate::diagram::MermaidMode::Off);
+        let prepared = crate::layout::PreparedDocument::new(document, Default::default());
+        crate::layout::layout_document(&prepared, crate::layout::LayoutOptions::new(40)).lines
+    }
+
+    fn texts(lines: &[RenderedLine]) -> Vec<String> {
+        lines.iter().map(RenderedLine::text).collect()
+    }
+
+    fn index_of(lines: &[RenderedLine], needle: &str) -> usize {
+        texts(lines)
+            .iter()
+            .position(|text| text.contains(needle))
+            .unwrap_or_else(|| panic!("no line containing {needle:?} in {:?}", texts(lines)))
+    }
+
+    const IN_A_LIST: &str = "1. Step one\n\n   ```sh\n   echo 0\n   echo 1\n   echo 2\n   ```\n";
+
+    /// A container's separator and title lines carry the container's whole
+    /// range, which also covers the code inside it.
+    #[test]
+    fn a_source_line_inside_a_container_opens_on_its_own_line() {
+        use crate::flavor::Flavor;
+        let lines = layout(IN_A_LIST, Flavor::Gfm);
+        assert_eq!(
+            rendered_line_for_source(&lines, 5),
+            Some(index_of(&lines, "echo 1"))
+        );
+        let details = "<details><summary>S</summary>\n\n```\nc0\nc1\n```\n\n</details>\n";
+        let lines = layout(details, Flavor::AzureDevops);
+        assert_eq!(
+            rendered_line_for_source(&lines, 5),
+            Some(index_of(&lines, "c1"))
+        );
+        // The delimiter row is a line of the table too.
+        let lines = layout("| h |\n|---|\n| a |\n", Flavor::Gfm);
+        assert_eq!(
+            rendered_line_for_source(&lines, 2),
+            Some(index_of(&lines, "├"))
+        );
+    }
+
+    #[test]
+    fn a_reload_inside_a_container_keeps_the_code_line() {
+        use crate::flavor::Flavor;
+        let old = layout(IN_A_LIST, Flavor::Gfm);
+        let edited = IN_A_LIST.replace("Step one", "Step number one");
+        let new = layout(&edited, Flavor::Gfm);
+        assert_eq!(
+            restored(&old, index_of(&old, "echo 2"), &new),
+            index_of(&new, "echo 2")
+        );
+    }
+
+    /// The same range can appear more than once, such as a heading and its
+    /// `[[_TOC_]]` entry, or the separators of one list item.
+    #[test]
+    fn a_repeated_range_restores_the_occurrence_that_was_on_top() {
+        use crate::flavor::Flavor;
+        let toc = "[[_TOC_]]\n\n# One\n\npara\n\n# Two\n\nlong paragraph here\n";
+        let lines = layout(toc, Flavor::AzureDevops);
+        let heading = index_of(&lines, "# Two");
+        assert_eq!(restored(&lines, heading, &lines), heading);
+
+        let loose = "- intro\n\n  ```\n  code\n  ```\n\n  outro\n";
+        let lines = layout(loose, Flavor::Gfm);
+        let separator = index_of(&lines, "outro") - 1;
+        assert_eq!(restored(&lines, separator, &lines), separator);
     }
 
     fn state() -> PagerState {

@@ -8,7 +8,7 @@ use crate::layout::inline::{InlineContext, segments};
 use crate::layout::wrap::{display_width, min_unbreakable_width, spans_width, wrap_spans};
 use crate::layout::{RenderedLine, RenderedSpan, StyleRole};
 use crate::markdown::model::{Alignment, TableBlock, TableCell};
-use crate::source::SourceRange;
+use crate::source::{SourceRange, SourceText};
 
 /// Columns left for a value before the label is stacked on its own line.
 const MIN_VALUE_WIDTH: usize = 8;
@@ -16,7 +16,12 @@ const MIN_VALUE_WIDTH: usize = 8;
 /// A cell already wrapped to its column width.
 type CellLines = Vec<Vec<RenderedSpan>>;
 
-pub fn layout_table(table: &TableBlock, width: usize, ctx: &InlineContext) -> Vec<RenderedLine> {
+pub fn layout_table(
+    table: &TableBlock,
+    width: usize,
+    ctx: &InlineContext,
+    source: &SourceText,
+) -> Vec<RenderedLine> {
     let columns = column_count(table);
     if columns == 0 {
         return Vec::new();
@@ -29,10 +34,22 @@ pub fn layout_table(table: &TableBlock, width: usize, ctx: &InlineContext) -> Ve
     let available = width.saturating_sub(chrome);
 
     let Some(widths) = allocate(&mins, &preferred, available) else {
-        return vertical_fallback(&cells, columns, width, table.range);
+        return vertical_fallback(&cells, columns, width, &row_ranges(table));
     };
 
-    render_grid(table, &cells, &widths, columns, table.range)
+    let ranges = row_ranges(table);
+    // The rule under the header stands where the `|---|` row is written.
+    let delimiter = source.line_range(ranges[0].line_end + 1);
+    render_grid(table, &cells, &widths, columns, &ranges, delimiter)
+}
+
+/// One range per entry in `cell_segments`, header first, so each rendered line
+/// maps back to the row it shows. The whole table stands in for a row the
+/// parser did not record.
+fn row_ranges(table: &TableBlock) -> Vec<SourceRange> {
+    (0..=table.rows.len())
+        .map(|row| table.row_ranges.get(row).copied().unwrap_or(table.range))
+        .collect()
 }
 
 fn column_count(table: &TableBlock) -> usize {
@@ -132,19 +149,22 @@ fn render_grid(
     rows: &[Vec<CellLines>],
     widths: &[usize],
     columns: usize,
-    range: SourceRange,
+    ranges: &[SourceRange],
+    delimiter: SourceRange,
 ) -> Vec<RenderedLine> {
     let mut out = Vec::new();
-    out.push(border_line(widths, '┌', '┬', '┐', range));
-    let mut rows_iter = rows.iter();
-    if let Some(header) = rows_iter.next() {
+    // The top border belongs to the header and the bottom one to the last row.
+    out.push(border_line(widths, '┌', '┬', '┐', ranges[0]));
+    let mut rows_iter = rows.iter().zip(ranges);
+    if let Some((header, &range)) = rows_iter.next() {
         out.extend(render_row(header, widths, table, columns, range, true));
-        out.push(border_line(widths, '├', '┼', '┤', range));
+        out.push(border_line(widths, '├', '┼', '┤', delimiter));
     }
-    for row in rows_iter {
+    for (row, &range) in rows_iter {
         out.extend(render_row(row, widths, table, columns, range, false));
     }
-    out.push(border_line(widths, '└', '┴', '┘', range));
+    let last = *ranges.last().expect("the header is always present");
+    out.push(border_line(widths, '└', '┴', '┘', last));
     out
 }
 
@@ -262,7 +282,7 @@ fn vertical_fallback(
     rows: &[Vec<CellLines>],
     columns: usize,
     width: usize,
-    range: SourceRange,
+    ranges: &[SourceRange],
 ) -> Vec<RenderedLine> {
     let headers: Vec<String> = (0..columns)
         .map(|i| {
@@ -284,7 +304,7 @@ fn vertical_fallback(
         .collect();
 
     let mut out = Vec::new();
-    for (index, row) in rows.iter().skip(1).enumerate() {
+    for (index, (row, &range)) in rows.iter().zip(ranges).skip(1).enumerate() {
         out.push(RenderedLine {
             spans: vec![RenderedSpan::new(
                 format!("Row {}", index + 1),
