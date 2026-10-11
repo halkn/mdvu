@@ -196,8 +196,8 @@ fn event_loop(input: PagerInput) -> Result<()> {
             }
             Event::Resize(columns, rows) => {
                 images.screen_cleared()?;
-                // Keep the reader's place across a re-layout by remembering the
-                // source line at the top of the viewport.
+                // Keep the reader's place across a re-layout by remembering
+                // which source the line at the top of the viewport shows.
                 let anchor = state.anchor(&rendered.lines);
                 width = content_width(columns);
                 rendered = layout_document(&document, LayoutOptions::new(width));
@@ -218,7 +218,7 @@ fn event_loop(input: PagerInput) -> Result<()> {
 }
 
 /// Put the reader back where they were after the surface was rebuilt, keeping
-/// `anchor`'s source line in view. `viewport` is the body's height and width.
+/// the line `anchor` names at the top. `viewport` is the body's height and width.
 fn restore(
     state: &mut PagerState,
     rendered: &RenderedDocument,

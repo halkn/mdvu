@@ -30,6 +30,9 @@ config は **既存フラグの既定値を上書きするだけ**。テーマ�
 
 ドキュメントは起動時に一度だけ parse し、layout はリサイズと reload のときだけ再実行する。画像読込と構文ハイライトは文書単位で準備し、reload で更新する。frame ごとに layout や diagram 描画を走らせない。reload は起動時と同じ解析・リソース準備を通し、再読込した文書を開き直した文書と区別できないようにする。parse から diagram 描画までの手順は `document::build` にだけ書く。
 
+- **読み位置は「描画行が示す source range・その range の何番目の連なりか・連なりの中の位置」で覚える（`pager/state.rs` の `Anchor`）。** 行番号だけでは、折り返した段落やコンテナの区切り行のように 1 つの range が複数の描画行を持つとき、復元先がその先頭へ戻る。幅が変わって連なりの長さが変わったときは、連なりの中の位置を比例で保つ。reload で byte がずれて同じ range が見つからないときは、range の開始行から探し直す。
+- source 行から描画行を引くとき（`--line`・見出し一覧・上記の探し直し）は、その行を覆う描画行のうち **range が最も狭いもの** を選ぶ。コンテナ（リスト項目・引用・alert・`<details>`）の区切り行とタイトル行はコンテナ全体の range を持って中身より前に出るので、最初に覆う行を選ぶと中身へ届かない。
+
 ## File watch
 
 `notify` の `RecommendedWatcher` を `std::sync::mpsc` で受け、既存の `crossterm::event::poll`（250ms）ループのタイムアウト側で回収する。async runtime は追加しない。

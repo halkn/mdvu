@@ -200,6 +200,9 @@ pub struct CodeBlock {
     pub language: Option<String>,
     pub text: String,
     pub range: SourceRange,
+    /// Source line of the first line of `text`. Each later line of `text` is
+    /// the next source line, so a rendered code line maps back to its own line.
+    pub body_line: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -216,6 +219,8 @@ pub struct TableBlock {
     pub header: Vec<TableCell>,
     pub rows: Vec<Vec<TableCell>>,
     pub range: SourceRange,
+    /// The header's range followed by one per row in `rows`.
+    pub row_ranges: Vec<SourceRange>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

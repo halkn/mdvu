@@ -139,6 +139,7 @@ mod tests {
             language: None,
             text: "a\tb\n".into(),
             range: prepared.document().blocks[0].range(),
+            body_line: 1,
         };
         let spans = prepared.code(&block);
         assert_eq!(spans.len(), 1);
@@ -156,10 +157,8 @@ mod tests {
         assert_eq!(rendered.lines[1].text(), "│ \\x1b    日");
         assert_eq!(rendered.lines[2].text(), "│ 👩‍💻  end");
         let range = rendered.lines[1].source_range.unwrap();
-        assert_eq!(
-            &text[range.byte_start..range.byte_end],
-            text.trim_end_matches('\n')
-        );
+        assert_eq!(&text[range.byte_start..range.byte_end], "\x1b\t日\n");
+        assert_eq!((range.line_start, range.line_end), (2, 2));
     }
 
     #[test]

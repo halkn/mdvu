@@ -73,13 +73,13 @@ fn layout_block(
         Block::List(l) => list(l, width, depth, ctx, out),
         Block::Quote(q) => quote(q, width, depth, ctx, out),
         Block::Code(c) => code(c, ctx, out),
-        Block::Table(t) => out.extend(layout_table(t, width, ctx.inline())),
+        Block::Table(t) => out.extend(layout_table(t, width, ctx.inline(), &ctx.document().source)),
         Block::HorizontalRule(range) => out.push(line(
             vec![RenderedSpan::new("─".repeat(width), StyleRole::Muted)],
             *range,
         )),
         Block::Footnote(f) => footnote(f, width, depth, ctx, out),
-        Block::RawHtml(h) => raw_html(h, out),
+        Block::RawHtml(h) => raw_html(h, ctx, out),
         Block::Toc(t) => toc(t, width, out),
         Block::Details(d) => details(d, width, depth, ctx, out),
         Block::Placeholder(p) => placeholder(p, width, out),
@@ -405,29 +405,30 @@ fn quote(
 }
 
 fn code(c: &CodeBlock, ctx: &PreparedDocument, out: &mut Vec<RenderedLine>) {
+    let source = &ctx.document().source;
     let header = match &c.language {
         Some(language) => format!("╭─ {}{language}", ctx.inline().icons.language(language)),
         None => "╭─".to_string(),
     };
     out.push(RenderedLine {
         spans: vec![RenderedSpan::new(header, StyleRole::CodeBorder)],
-        source_range: Some(c.range),
+        source_range: Some(source.line_range(c.range.line_start)),
         no_wrap: true,
         image: None,
     });
-    for content in ctx.code(c).iter() {
+    for (index, content) in ctx.code(c).iter().enumerate() {
         let mut spans = vec![RenderedSpan::new(BORDER, StyleRole::CodeBorder)];
         spans.extend(content.iter().cloned());
         out.push(RenderedLine {
             spans,
-            source_range: Some(c.range),
+            source_range: Some(source.line_range(c.body_line + index)),
             no_wrap: true,
             image: None,
         });
     }
     out.push(RenderedLine {
         spans: vec![RenderedSpan::new("╰─", StyleRole::CodeBorder)],
-        source_range: Some(c.range),
+        source_range: Some(source.line_range(c.range.line_end)),
         no_wrap: true,
         image: None,
     });
@@ -467,11 +468,13 @@ fn footnote(
     }
 }
 
-fn raw_html(h: &RawHtmlBlock, out: &mut Vec<RenderedLine>) {
-    for text in h.text.lines() {
+fn raw_html(h: &RawHtmlBlock, ctx: &PreparedDocument, out: &mut Vec<RenderedLine>) {
+    let source = &ctx.document().source;
+    for (index, text) in h.text.lines().enumerate() {
+        let line = (h.range.line_start + index).min(h.range.line_end);
         out.push(RenderedLine {
             spans: vec![RenderedSpan::new(expand_tabs(text), StyleRole::Muted)],
-            source_range: Some(h.range),
+            source_range: Some(source.line_range(line)),
             no_wrap: true,
             image: None,
         });
@@ -731,6 +734,64 @@ mod tests {
     fn a_quote_does_not_raise_the_bullet_depth() {
         let rendered = render("> - one\n", &InlineContext::default());
         assert_eq!(rendered.lines[0].text(), "│ • one");
+    }
+
+    /// The source line each rendered line containing `needle` maps to.
+    fn source_lines_of(rendered: &RenderedDocument, needle: &str) -> Vec<(usize, usize)> {
+        rendered
+            .lines
+            .iter()
+            .filter(|line| line.text().contains(needle))
+            .map(|line| {
+                let range = line.source_range.expect("mapped");
+                (range.line_start, range.line_end)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn every_code_line_maps_to_its_own_source_line() {
+        let markdown =
+            "intro\n\n```text\nfirst\nsecond\n```\n\n> ```\n> quoted\n> ```\n\n    indented\n";
+        let rendered = render(markdown, &InlineContext::default());
+        assert_eq!(source_lines_of(&rendered, "╭─ text"), vec![(3, 3)]);
+        assert_eq!(source_lines_of(&rendered, "first"), vec![(4, 4)]);
+        assert_eq!(source_lines_of(&rendered, "second"), vec![(5, 5)]);
+        assert_eq!(source_lines_of(&rendered, "quoted"), vec![(9, 9)]);
+        assert_eq!(source_lines_of(&rendered, "indented"), vec![(12, 12)]);
+        let footers: Vec<usize> = rendered
+            .lines
+            .iter()
+            .filter(|line| line.text().ends_with("╰─"))
+            .map(|line| line.source_range.expect("mapped").line_start)
+            .collect();
+        assert_eq!(footers, vec![6, 10, 12]);
+    }
+
+    #[test]
+    fn every_table_row_maps_to_its_own_source_line() {
+        let markdown = "| head |\n|------|\n| one |\n| two |\n";
+        let grid = render(markdown, &InlineContext::default());
+        assert_eq!(source_lines_of(&grid, "head"), vec![(1, 1)]);
+        assert_eq!(source_lines_of(&grid, "one"), vec![(3, 3)]);
+        assert_eq!(source_lines_of(&grid, "two"), vec![(4, 4)]);
+
+        // Too narrow for a grid, so each row becomes a list of label: value.
+        let wide = "| aaaaaaaaaaaa | bbbbbbbbbbbb |\n|---|---|\n| cccccccccccc | dddddddddddd |\n";
+        let document = crate::flavor::parse(SourceText::new(wide.to_string()), Flavor::Gfm);
+        let list = layout_document(
+            &PreparedDocument::new(document, InlineContext::default()),
+            LayoutOptions::new(20),
+        );
+        assert_eq!(source_lines_of(&list, "Row 1"), vec![(3, 3)]);
+        assert_eq!(source_lines_of(&list, "dddd"), vec![(3, 3)]);
+    }
+
+    #[test]
+    fn every_raw_html_line_maps_to_its_own_source_line() {
+        let rendered = render("<div>\n<p>a</p>\n</div>\n", &InlineContext::default());
+        assert_eq!(source_lines_of(&rendered, "<p>"), vec![(2, 2)]);
+        assert_eq!(source_lines_of(&rendered, "</div>"), vec![(3, 3)]);
     }
 
     #[test]

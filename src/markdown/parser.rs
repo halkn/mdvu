@@ -11,7 +11,7 @@ use pulldown_cmark::{
 
 use crate::diagnostic::Diagnostic;
 use crate::markdown::model::*;
-use crate::source::SourceText;
+use crate::source::{SourceRange, SourceText};
 
 pub fn options() -> Options {
     Options::ENABLE_TABLES
@@ -94,6 +94,8 @@ enum Frame {
         end: usize,
         language: Option<String>,
         text: String,
+        /// Line of the first text event, which is where the body starts.
+        body_line: Option<usize>,
     },
     HtmlBlock {
         start: usize,
@@ -106,9 +108,12 @@ enum Frame {
         alignments: Vec<Alignment>,
         header: Vec<TableCell>,
         rows: Vec<Vec<TableCell>>,
+        row_ranges: Vec<SourceRange>,
         in_head: bool,
     },
     TableRow {
+        start: usize,
+        end: usize,
         cells: Vec<TableCell>,
     },
     TableCell {
@@ -227,6 +232,7 @@ impl<'a> Builder<'a> {
                     CodeBlockKind::Indented => None,
                 },
                 text: String::new(),
+                body_line: None,
             },
             Tag::HtmlBlock => Frame::HtmlBlock {
                 start,
@@ -257,15 +263,24 @@ impl<'a> Builder<'a> {
                 alignments: alignments.into_iter().map(alignment).collect(),
                 header: Vec::new(),
                 rows: Vec::new(),
+                row_ranges: Vec::new(),
                 in_head: false,
             },
             Tag::TableHead => {
                 if let Some(Frame::Table { in_head, .. }) = self.stack.last_mut() {
                     *in_head = true;
                 }
-                Frame::TableRow { cells: Vec::new() }
+                Frame::TableRow {
+                    start,
+                    end,
+                    cells: Vec::new(),
+                }
             }
-            Tag::TableRow => Frame::TableRow { cells: Vec::new() },
+            Tag::TableRow => Frame::TableRow {
+                start,
+                end,
+                cells: Vec::new(),
+            },
             Tag::TableCell => Frame::TableCell {
                 content: Vec::new(),
             },
@@ -392,12 +407,14 @@ impl<'a> Builder<'a> {
                 end,
                 language,
                 text,
+                body_line,
             } => {
                 let range = self.source.range(start, end);
                 self.push_block(Block::Code(CodeBlock {
                     language,
                     text,
                     range,
+                    body_line: body_line.unwrap_or(range.line_start),
                 }));
             }
             Frame::HtmlBlock { start, end, text } => {
@@ -410,6 +427,7 @@ impl<'a> Builder<'a> {
                 alignments,
                 header,
                 rows,
+                row_ranges,
                 ..
             } => {
                 let range = self.source.range(start, end);
@@ -418,16 +436,20 @@ impl<'a> Builder<'a> {
                     header,
                     rows,
                     range,
+                    row_ranges,
                 }));
             }
-            Frame::TableRow { cells } => {
+            Frame::TableRow { start, end, cells } => {
+                let range = self.source.range(start, end);
                 if let Some(Frame::Table {
                     header,
                     rows,
+                    row_ranges,
                     in_head,
                     ..
                 }) = self.stack.last_mut()
                 {
+                    row_ranges.push(range);
                     if *in_head {
                         *header = cells;
                         *in_head = false;
@@ -437,7 +459,7 @@ impl<'a> Builder<'a> {
                 }
             }
             Frame::TableCell { content } => {
-                if let Some(Frame::TableRow { cells }) = self.stack.last_mut() {
+                if let Some(Frame::TableRow { cells, .. }) = self.stack.last_mut() {
                     cells.push(TableCell { content });
                 }
             }
@@ -460,9 +482,15 @@ impl<'a> Builder<'a> {
 
     fn text(&mut self, text: &str, start: usize, end: usize) {
         match self.stack.last_mut() {
-            Some(Frame::Code { text: buf, .. }) | Some(Frame::HtmlBlock { text: buf, .. }) => {
+            Some(Frame::Code {
+                text: buf,
+                body_line,
+                ..
+            }) => {
                 buf.push_str(text);
+                body_line.get_or_insert_with(|| self.source.line_of(start));
             }
+            Some(Frame::HtmlBlock { text: buf, .. }) => buf.push_str(text),
             _ => self.inline(Inline::Text(text.to_string()), start, end),
         }
     }
