@@ -177,6 +177,13 @@ impl PagerState {
         }
     }
 
+    /// Whether images are drawn this frame. They are written after `ratatui`
+    /// has drawn the frame and kitty layers them above the text, so an overlay
+    /// would be hidden under any image it covers.
+    pub fn shows_images(&self) -> bool {
+        matches!(self.mode(), Mode::Normal | Mode::Search)
+    }
+
     pub fn search_session(&self) -> Option<&SearchSession> {
         match &self.interaction {
             Interaction::Search(session) => Some(session),
@@ -782,6 +789,28 @@ mod tests {
         s.apply(Action::Bottom);
         assert_eq!(s.viewport.top, 0);
         assert_eq!(s.percentage(), 100);
+    }
+
+    #[test]
+    fn images_are_hidden_only_while_an_overlay_is_open() {
+        let mut s = state();
+        s.outline = Outline {
+            items: vec![OutlineItem {
+                level: 1,
+                text: "a".into(),
+                line: 0,
+            }],
+            selected: 0,
+        };
+        assert!(s.shows_images());
+        s.apply(Action::ToggleOutline);
+        assert!(!s.shows_images());
+        s.cancel_outline();
+        s.apply(Action::ToggleHelp);
+        assert!(!s.shows_images());
+        s.close_help();
+        s.apply(Action::StartSearch);
+        assert!(s.shows_images());
     }
 
     #[test]
