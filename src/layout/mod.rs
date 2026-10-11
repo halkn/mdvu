@@ -6,11 +6,13 @@ pub mod document;
 pub mod highlight;
 pub mod icons;
 pub mod inline;
+mod prepare;
 pub mod table;
 pub mod theme;
 pub mod wrap;
 
 pub use document::layout_document;
+pub use prepare::PreparedDocument;
 
 use std::rc::Rc;
 
@@ -80,7 +82,7 @@ pub struct RenderedSpan {
 impl RenderedSpan {
     pub fn new(text: impl Into<String>, role: StyleRole) -> Self {
         Self {
-            text: text.into(),
+            text: crate::text::into_visible(text.into()),
             role,
             link: None,
         }

@@ -76,26 +76,84 @@ impl ImageSupport {
 pub struct Placement {
     pub cols: usize,
     pub rows: usize,
-    /// Unique within the process, so a kitty terminal can keep the image
-    /// stored under it while the pager scrolls.
+    /// The `ImageAsset`'s id, shared by every placement of it across layouts,
+    /// so a kitty terminal keeps one stored copy while the pager scrolls and
+    /// resizes.
     pub id: u32,
     protocol: Protocol,
+    asset: Rc<ImageAsset>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImageAsset {
+    id: u32,
     pixels: Pixels,
-    bytes: Vec<u8>,
+    bytes: Rc<[u8]>,
+    css_width: Option<u32>,
+}
+
+impl ImageAsset {
+    /// A PNG `mdvu` drew itself, such as a rasterised diagram, that is
+    /// `css_width` CSS pixels wide. No file is read, so only the format and the
+    /// area are checked.
+    ///
+    /// Its size follows the CSS pixels a browser would show rather than the
+    /// terminal's cell or the picture's resolution: a high-density display
+    /// reports device pixels, which would halve the picture, and a large
+    /// diagram is drawn at a lower resolution than a small one.
+    pub fn from_png(bytes: Rc<[u8]>, css_width: u32) -> Option<Rc<Self>> {
+        if dimensions::format_of(&bytes) != Some(Format::Png) {
+            return None;
+        }
+        let pixels = dimensions::dimensions(&bytes)?;
+        Some(Self::new(bytes, pixels, Some(css_width)))
+    }
+
+    fn new(bytes: Rc<[u8]>, pixels: Pixels, css_width: Option<u32>) -> Rc<Self> {
+        static NEXT_ID: AtomicU32 = AtomicU32::new(1);
+        Rc::new(Self {
+            id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
+            bytes,
+            pixels,
+            css_width,
+        })
+    }
+
+    pub fn place(self: &Rc<Self>, support: ImageSupport, max_cols: usize) -> Option<Rc<Placement>> {
+        if max_cols == 0 {
+            return None;
+        }
+        let (cols, rows) = match self.css_width {
+            Some(width) => fit_cols(
+                self.pixels,
+                support.cell,
+                (width as usize).div_ceil(CSS_CELL_WIDTH).max(1),
+                max_cols,
+            ),
+            None => fit(self.pixels, support.cell, max_cols),
+        };
+        Some(Rc::new(Placement {
+            cols,
+            rows,
+            id: self.id,
+            protocol: support.protocol,
+            asset: Rc::clone(self),
+        }))
+    }
 }
 
 impl Placement {
     /// The escape sequence that sends and draws this image at the cursor in
     /// one step. It leaves the cursor where it was.
     pub fn escape(&self) -> String {
-        protocol::place(self.protocol, &self.bytes, self.cols, self.rows)
+        protocol::place(self.protocol, &self.asset.bytes, self.cols, self.rows)
     }
 
     /// The escape sequence that stores this image in the terminal under `id`
     /// without drawing it, or `None` when the protocol cannot store images.
     pub fn transmit(&self) -> Option<String> {
         match self.protocol {
-            Protocol::Kitty => Some(protocol::transmit(&self.bytes, self.id)),
+            Protocol::Kitty => Some(protocol::transmit(&self.asset.bytes, self.id)),
             Protocol::Iterm2 => None,
         }
     }
@@ -121,11 +179,11 @@ impl Placement {
                 protocol::show(self.id, self.cols, self.rows)
             }
             Protocol::Kitty => {
-                let height = u64::from(self.pixels.height);
+                let height = u64::from(self.asset.pixels.height);
                 let at = |row: usize| (row as u64 * height / self.rows as u64) as u32;
                 let top = at(skip);
                 let bottom = at(skip + rows);
-                let source = (0, top, self.pixels.width, bottom - top);
+                let source = (0, top, self.asset.pixels.width, bottom - top);
                 protocol::show_part(self.id, self.cols, rows, source)
             }
             Protocol::Iterm2 => self.escape(),
@@ -181,19 +239,14 @@ pub fn protocol_from_env(env: &Env) -> Option<Protocol> {
     }
 }
 
-/// Reads the image `dest` points at and works out its area, or `None` when any
-/// rule below is not met. A rejected image keeps its text placeholder; it is
-/// never an error and never changes the exit code.
-pub fn resolve(
+/// Reads the image `dest` points at, or `None` when any rule below is not met.
+/// A rejected image keeps its text placeholder; it is never an error and never
+/// changes the exit code.
+pub fn load(
     dest: &str,
     base_dir: Option<&Path>,
     content_root: Option<&Path>,
-    support: ImageSupport,
-    max_cols: usize,
-) -> Option<Rc<Placement>> {
-    if max_cols == 0 {
-        return None;
-    }
+) -> Option<Rc<ImageAsset>> {
     // A document read from stdin has no directory to confine reads to.
     let base = base_dir?;
     let path = local_path(dest)?;
@@ -204,59 +257,23 @@ pub fn resolve(
     if !metadata.is_file() || metadata.len() > MAX_BYTES {
         return None;
     }
-    let bytes = std::fs::read(&path).ok()?;
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    std::fs::File::open(&path)
+        .ok()?
+        .take(MAX_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() as u64 > MAX_BYTES {
+        return None;
+    }
     // A file whose contents disagree with its name is not sent on: the
     // terminal, not `mdvu`, would be the one to decode it.
     if dimensions::format_of(&bytes) != Some(expected) {
         return None;
     }
     let pixels = dimensions::dimensions(&bytes)?;
-    Some(place(
-        bytes,
-        support.protocol,
-        pixels,
-        fit(pixels, support.cell, max_cols),
-    ))
-}
-
-/// Places a PNG `mdvu` drew itself, such as a rasterised diagram, that is
-/// `css_width` CSS pixels wide. No file is read, so only the format and the
-/// area are checked.
-///
-/// Its size follows the CSS pixels a browser would show rather than the
-/// terminal's cell or the picture's resolution: a high-density display reports
-/// device pixels, which would halve the picture, and a large diagram is drawn
-/// at a lower resolution than a small one.
-pub fn from_png(
-    bytes: Vec<u8>,
-    support: ImageSupport,
-    max_cols: usize,
-    css_width: u32,
-) -> Option<Rc<Placement>> {
-    if max_cols == 0 || dimensions::format_of(&bytes) != Some(Format::Png) {
-        return None;
-    }
-    let pixels = dimensions::dimensions(&bytes)?;
-    let natural_cols = (css_width as usize).div_ceil(CSS_CELL_WIDTH).max(1);
-    let area = fit_cols(pixels, support.cell, natural_cols, max_cols);
-    Some(place(bytes, support.protocol, pixels, area))
-}
-
-fn place(
-    bytes: Vec<u8>,
-    protocol: Protocol,
-    pixels: Pixels,
-    (cols, rows): (usize, usize),
-) -> Rc<Placement> {
-    static NEXT_ID: AtomicU32 = AtomicU32::new(1);
-    Rc::new(Placement {
-        cols,
-        rows,
-        id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
-        protocol,
-        pixels,
-        bytes,
-    })
+    Some(ImageAsset::new(bytes.into(), pixels, None))
 }
 
 /// A local path, or `None` for anything with a URL scheme. Remote images are
@@ -431,6 +448,25 @@ mod tests {
         out.extend_from_slice(&height.to_be_bytes());
         out.extend_from_slice(&[8, 6, 0, 0, 0]);
         out
+    }
+
+    fn from_png(
+        bytes: Vec<u8>,
+        support: ImageSupport,
+        max_cols: usize,
+        css_width: u32,
+    ) -> Option<Rc<Placement>> {
+        ImageAsset::from_png(bytes.into(), css_width)?.place(support, max_cols)
+    }
+
+    fn resolve(
+        dest: &str,
+        base_dir: Option<&Path>,
+        content_root: Option<&Path>,
+        support: ImageSupport,
+        max_cols: usize,
+    ) -> Option<Rc<Placement>> {
+        load(dest, base_dir, content_root)?.place(support, max_cols)
     }
 
     const SUPPORT: ImageSupport = ImageSupport {

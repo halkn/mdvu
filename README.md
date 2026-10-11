@@ -419,6 +419,10 @@ up, because each glyph is measured as one display column.
   because `mdvu` has no concept of includes.
 - `mdvu` never opens a link or runs an external command. Clicking is the
   terminal's job.
+- Control characters in document text are displayed as literal hex escapes
+  such as `\x1b`, including inside code blocks. Source positions are preserved.
+  Tabs and line breaks in prose are shown as spaces, and tabs in code blocks
+  are expanded.
 - Syntax highlighting covers the languages shipped with `syntect` and classifies
   tokens into seven roles; it is not an editor-grade highlighter.
 - No mouse support, no user-defined themes and no configurable key bindings.
@@ -443,7 +447,7 @@ tag; the tag must match the `version` in `Cargo.toml`.
 
 Per-module design decisions — why kinsoku is applied while chunks are built, why
 Mermaid renders once before layout, why `--watch` watches the parent directory —
-live in [`.claude/rules/`](.claude/rules), next to the code they constrain.
+live in [`docs/`](docs).
 
 ## License
 

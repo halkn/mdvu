@@ -1,14 +1,6 @@
----
-paths:
-  - "src/pager/**"
-  - "src/cli.rs"
-  - "src/config.rs"
-  - "src/main.rs"
-  - "src/input.rs"
-  - "tests/cli.rs"
----
-
 # CLI と pager の決定事項
+
+`src/pager/`・`src/cli.rs`・`src/config.rs`・`src/main.rs`・`src/input.rs`・`tests/cli.rs` を触る前に読む。
 
 ## 終了コードと不正な組み合わせ
 
@@ -36,7 +28,7 @@ config は **既存フラグの既定値を上書きするだけ**。テーマ�
 
 ## レイアウトの再実行
 
-ドキュメントは起動時に一度だけ parse し、layout はリサイズと reload のときだけ再実行する。frame ごとに layout や diagram 描画を走らせない。reload は起動時とまったく同じ経路（`input::load` → `document::build` → `layout_document`）を通るので、再読込した文書は開き直した文書と区別できない。parse から diagram 描画までの手順は `document::build` にだけ書く。
+ドキュメントは起動時に一度だけ parse し、layout はリサイズと reload のときだけ再実行する。画像読込と構文ハイライトは文書単位で準備し、reload で更新する。frame ごとに layout や diagram 描画を走らせない。reload は起動時と同じ解析・リソース準備を通し、再読込した文書を開き直した文書と区別できないようにする。parse から diagram 描画までの手順は `document::build` にだけ書く。
 
 ## File watch
 
@@ -61,7 +53,7 @@ FSEvents は watch 開始直前の書き込みを起動後に報告すること�
 - プレビューの一致集合は確定済みの `Search` と別に持つ。`Esc` は viewport と確定済み検索の両方を押し戻し、`Enter` は画面に出ているものを確定する。
 - プロンプトの caret はグラフェム境界で動かす。端末カーソルは `TerminalGuard` が非表示のまま所有するので、caret は status bar の反転セルとして描く。カーソル表示を切り替えない。
 - 現在の一致は他の一致と別の `StyleRole`（`CurrentMatch`）で描く。すべて同じ反転だと、`n` がどこへ移ったのかが画面から読めない。
-- 照合は smart case（クエリが全て小文字なら case insensitive、大文字を含めば case sensitive）。lowercase でバイト長が変わる場合にオフセットを使わない既存の保護はそのまま残す。
+- 照合は smart case（クエリが全て小文字なら case insensitive、大文字を含めば case sensitive）。lowercase 後の一致範囲は原文の文字境界へ写像する。総バイト長が同じでも途中の位置が一致するとは限らない。
 
 ## OSC 8
 
@@ -81,4 +73,4 @@ FSEvents は watch 開始直前の書き込みを起動後に報告すること�
 
 pager の対話部分は自動テストできない。画像の配置計算は `app.rs` のループではなく `pager/images.rs` の純粋関数に置き、そこを unit test で固める。状態遷移は `state.rs` / `event.rs` の純粋な unit test で固め、描画は `ratatui` の `TestBackend` で 1 フレーム描いて検証する。ロジックを `app.rs` のイベントループへ書き足すのではなく、`state.rs` の純粋関数側へ寄せる。Windows 端末上での pager 対話は未検証（CI は build と unit test のみ）。
 
-`tests/cli.rs` と `tests/render.rs` のヘルパは `MDVU_CONFIG=""`、`COLORFGBG` / `NO_COLOR` 除去で開発者の環境設定を遮断している。新しいテストも同じヘルパ経由で起動する。
+`tests/common/mod.rs` のヘルパは `MDVU_CONFIG=""`、`COLORFGBG` / `NO_COLOR` 除去で開発者の環境設定を遮断している。新しいテストも同じヘルパ経由で起動する。

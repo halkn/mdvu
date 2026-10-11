@@ -12,6 +12,7 @@ mod markdown;
 mod output;
 mod pager;
 mod source;
+mod text;
 
 use cli::{Cli, Settings, TerminalContext};
 use error::{AppError, Result};
@@ -29,14 +30,14 @@ fn main() {
         if err.is_broken_pipe() {
             return;
         }
-        eprintln!("mdvu: {err}");
+        eprintln!("mdvu: {}", text::visible(&err.to_string()));
         std::process::exit(AppError::EXIT_FAILURE);
     }
 }
 
 fn run(settings: &Settings, ctx: TerminalContext) -> Result<()> {
     let loaded = input::load(&settings.input)?;
-    let theme = Theme::new(Variant::resolve(settings.theme));
+    let theme = Theme::new(Variant::resolve(settings.theme)).with_color(settings.color);
     let document = document::build(loaded.text, settings.flavor, settings.mermaid);
     let inline = InlineContext {
         mermaid: settings.mermaid,
@@ -53,7 +54,7 @@ fn run(settings: &Settings, ctx: TerminalContext) -> Result<()> {
             document,
             inline,
             theme,
-            title: loaded.display_name,
+            title: text::visible(&loaded.display_name).into_owned(),
             flavor: flavor_label(settings.flavor),
             width_override: settings.width.map(usize::from),
             start_line: settings.line,
@@ -61,7 +62,8 @@ fn run(settings: &Settings, ctx: TerminalContext) -> Result<()> {
         }),
         cli::OutputMode::Stdout => {
             let options = LayoutOptions::new(resolve_width(settings, ctx));
-            let rendered = layout::layout_document(&document, options, &inline);
+            let prepared = layout::PreparedDocument::new(document, inline);
+            let rendered = layout::layout_document(&prepared, options);
             let mut out = std::io::stdout().lock();
             output::write_document(
                 &mut out,

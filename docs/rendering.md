@@ -1,15 +1,6 @@
----
-paths:
-  - "src/markdown/**"
-  - "src/flavor/**"
-  - "src/diagram/**"
-  - "src/layout/**"
-  - "tests/render.rs"
-  - "tests/fixtures/**"
-  - "tests/snapshots/**"
----
-
 # パース〜レイアウトの決定事項
+
+`src/markdown/`・`src/flavor/`・`src/diagram/`・`src/layout/`・`tests/render.rs`・`tests/fixtures/`・`tests/snapshots/` を触る前に読む。
 
 ## IR とフレーバー
 
@@ -26,7 +17,7 @@ paths:
 
 ## Diagram
 
-diagram は **parse 直後・layout 前に一度だけ** render し、結果を `DiagramBlock::rendered`（`--mermaid image` では `DiagramBlock::png`）に保持する。frame loop と resize は renderer を呼ばない。`merman` 0.7 の `AsciiRenderOptions` は幅オプションを持たず出力幅は内容から決まるため、resize で再 render しても結果は同一になる。将来 `merman` が幅指定に対応した場合は、resize 経路から `diagram::resolve` を呼び直すだけで対応できる。
+diagram は **parse 直後・layout 前に一度だけ** render し、結果を `DiagramBlock::output` に保持する。frame loop と resize は renderer を呼ばない。`merman` 0.7 の `AsciiRenderOptions` は幅オプションを持たず出力幅は内容から決まるため、resize で再 render しても結果は同一になる。将来 `merman` が幅指定に対応した場合は、resize 経路から `diagram::resolve` を呼び直すだけで対応できる。
 
 - 描画に失敗した diagram は diagnostic を出してソースへフォールバックし、文書の残りは通常どおり描画され、プロセスは exit 0 のまま。unsupported な diagram family は warning、構文エラーは error として分ける。
 - `--mermaid image`（rasterize の境界・大きさ・解像度）の決定事項は `docs/mermaid-image.md` にある。

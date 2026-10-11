@@ -131,14 +131,32 @@ impl Variant {
 #[derive(Debug, Clone, Copy)]
 pub struct Theme {
     pub variant: Variant,
+    color: bool,
 }
 
 impl Theme {
     pub fn new(variant: Variant) -> Self {
-        Self { variant }
+        Self {
+            variant,
+            color: true,
+        }
+    }
+
+    pub fn with_color(mut self, choice: crate::output::ColorChoice) -> Self {
+        self.color = choice == crate::output::ColorChoice::Ansi;
+        self
     }
 
     pub fn style(&self, role: StyleRole) -> Style {
+        let mut style = self.colored_style(role);
+        if !self.color {
+            style.fg = None;
+            style.bg = None;
+        }
+        style
+    }
+
+    fn colored_style(&self, role: StyleRole) -> Style {
         let accent = match self.variant {
             Variant::Dark => Color::BrightCyan,
             Variant::Light => Color::Blue,

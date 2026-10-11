@@ -200,6 +200,57 @@ fn details_expands_with_its_summary_and_markdown_body() {
 }
 
 #[test]
+fn multiline_details_opening_tags_keep_the_summary_and_body() {
+    for opening in ["<details\nopen>", "<details open\n>", "<details\r\nopen>"] {
+        let doc = azure(&format!(
+            "{opening}<summary>More info</summary>\n\n- one\n- two\n\n</details>\n\nafter\n"
+        ));
+        assert_eq!(kinds(&doc), vec!["details", "paragraph"]);
+        let Block::Details(details) = &doc.blocks[0] else {
+            panic!("expected details");
+        };
+        assert_eq!(plain_text(&details.summary), "More info");
+        assert_eq!(details.blocks.len(), 1);
+        assert!(matches!(&details.blocks[0], Block::List(_)));
+        assert!(doc.diagnostics.is_empty());
+    }
+}
+
+#[test]
+fn multiline_details_without_a_summary_keeps_its_body() {
+    let doc = azure("<details\nopen\n>body text</details>\n");
+    let Block::Details(details) = &doc.blocks[0] else {
+        panic!("expected details, got {:?}", kinds(&doc));
+    };
+    assert_eq!(plain_text(&details.summary), "Details");
+    assert_eq!(details.blocks.len(), 1);
+    assert!(matches!(&details.blocks[0], Block::Paragraph(p)
+        if plain_text(&p.content) == "body text"));
+}
+
+#[test]
+fn nested_multiline_details_keep_the_outer_body() {
+    let doc = azure(concat!(
+        "<details><summary>Outer</summary>\n\n",
+        "<details\nopen>\n<summary>Inner</summary>\n\ninner body\n</details>\n\n",
+        "outer body\n</details>\n"
+    ));
+    assert_eq!(kinds(&doc), vec!["details"]);
+    let Block::Details(outer) = &doc.blocks[0] else {
+        panic!("expected details");
+    };
+    assert_eq!(plain_text(&outer.summary), "Outer");
+    assert_eq!(outer.blocks.len(), 2);
+    let Block::Details(inner) = &outer.blocks[0] else {
+        panic!("expected nested details");
+    };
+    assert_eq!(plain_text(&inner.summary), "Inner");
+    assert!(matches!(&outer.blocks[1], Block::Paragraph(p)
+        if plain_text(&p.content) == "outer body"));
+    assert!(doc.diagnostics.is_empty());
+}
+
+#[test]
 fn details_without_a_summary_keeps_its_body() {
     let doc = azure("<details>\nHidden content here\n</details>\n");
     let Block::Details(d) = &doc.blocks[0] else {
@@ -423,4 +474,85 @@ fn plain_text_of(blocks: &[Block]) -> String {
             _ => None,
         })
         .collect()
+}
+#[test]
+fn long_fences_keep_short_markers_and_macros_literal() {
+    let source =
+        crate::source::SourceText::new("````text\n```\n[[_TOC_]]\n````\n\n# After\n".into());
+    let doc = super::azure_devops::parse(source);
+    assert!(matches!(&doc.blocks[0], Block::Code(c) if c.text.contains("[[_TOC_]]")));
+    assert!(matches!(&doc.blocks[1], Block::Heading(h) if h.plain == "After"));
+}
+
+#[test]
+fn details_closers_inside_fences_are_literal() {
+    let doc = super::azure_devops::parse(crate::source::SourceText::new(
+        "<details>\n<summary>Title</summary>\n\n```text\n</details>\n```\n\nbody\n</details>\n"
+            .into(),
+    ));
+    let Block::Details(details) = &doc.blocks[0] else {
+        panic!("details expected")
+    };
+    assert!(matches!(&details.blocks[0], Block::Code(c) if c.text.contains("</details>")));
+    assert!(matches!(&details.blocks[1], Block::Paragraph(_)));
+    assert_eq!(doc.blocks.len(), 1);
+}
+
+#[test]
+fn nested_toc_expands_first_and_ignores_later_macros() {
+    let doc = super::azure_devops::parse(crate::source::SourceText::new(
+        "<details>\n<summary>Title</summary>\n\n[[_TOC_]]\n\n# Inside\n</details>\n\n[[_TOC_]]\n\nSetext\n===\n\n# Outside\n".into(),
+    ));
+    let Block::Details(details) = &doc.blocks[0] else {
+        panic!("details expected")
+    };
+    let Block::Toc(toc) = &details.blocks[0] else {
+        panic!("toc expected")
+    };
+    assert_eq!(
+        toc.entries
+            .iter()
+            .map(|e| e.text.as_str())
+            .collect::<Vec<_>>(),
+        ["Inside", "Outside"]
+    );
+    assert!(matches!(&doc.blocks[1], Block::Placeholder(_)));
+    assert_eq!(doc.diagnostics.len(), 1);
+}
+
+#[test]
+fn a_details_opening_tag_that_never_closes_stays_text() {
+    let doc = azure("<details\nfoo\n");
+    assert!(!kinds(&doc).contains(&"details"), "{:?}", kinds(&doc));
+}
+
+#[test]
+fn an_outer_details_without_a_summary_does_not_take_the_inner_one() {
+    let doc = azure(concat!(
+        "<details>\nOuter body\n\n",
+        "<details><summary>Inner</summary>\n\ninner text\n</details>\n",
+        "</details>\n"
+    ));
+    assert_eq!(kinds(&doc), vec!["details"]);
+    let Block::Details(outer) = &doc.blocks[0] else {
+        panic!("expected details");
+    };
+    assert_eq!(plain_text(&outer.summary), "Details");
+    assert!(matches!(&outer.blocks[0], Block::Paragraph(p)
+        if plain_text(&p.content) == "Outer body"));
+    let Block::Details(inner) = &outer.blocks[1] else {
+        panic!("expected nested details, got {:?}", outer.blocks);
+    };
+    assert_eq!(plain_text(&inner.summary), "Inner");
+    assert_eq!(outer.blocks.len(), 2);
+}
+
+#[test]
+fn toc_skips_setext_headings_that_start_with_a_hash() {
+    let doc = azure("[[_TOC_]]\n\n#hashtag\n===\n\n# Real\n");
+    let Some(Block::Toc(toc)) = doc.blocks.iter().find(|b| matches!(b, Block::Toc(_))) else {
+        panic!("expected a TOC");
+    };
+    let labels: Vec<&str> = toc.entries.iter().map(|e| e.text.as_str()).collect();
+    assert_eq!(labels, vec!["Real"]);
 }

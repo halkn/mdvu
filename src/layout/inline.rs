@@ -137,7 +137,7 @@ fn push(out: &mut [Vec<RenderedSpan>], text: &str, role: StyleRole) {
     }
     out.last_mut()
         .expect("at least one segment")
-        .push(RenderedSpan::new(text, role));
+        .push(RenderedSpan::new(crate::text::spaced(text), role));
 }
 
 /// Position in the output, used to attach a destination to spans that are about
@@ -279,6 +279,19 @@ mod tests {
         )])])];
         let out = spans(&inlines, &ctx());
         assert_eq!(role_of(&out, "x"), StyleRole::Emphasis);
+    }
+
+    #[test]
+    fn tabs_and_line_breaks_in_text_become_spaces() {
+        let inlines = vec![
+            Inline::Text("a\tb".into()),
+            Inline::Code("c\td".into()),
+            Inline::RawHtml("<span\nclass=\"x\">".into()),
+        ];
+        assert_eq!(
+            text_of(&spans(&inlines, &ctx())),
+            "a bc d<span class=\"x\">"
+        );
     }
 
     #[test]

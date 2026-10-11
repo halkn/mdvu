@@ -4,41 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `mdvu` は GFM と Azure DevOps Wiki Markdown を端末で描画する単一ファイル向けビューア（Rust 2024 edition、bin crate のみ、lib target 無し）。仕様・オプション・既知の制限は `README.md` にある。
 
-## コマンド
+## 検証と設計
 
-```console
-cargo test --all-features                     # 全テスト
-cargo test --test render                      # golden rendering のみ
-cargo test --test cli                         # CLI 統合テストのみ
-cargo test --test render gfm_tables_80        # 単一テスト
-cargo test --lib flavor::                     # モジュール名で絞った unit test
-cargo insta review                            # snapshot 差分のレビュー
-INSTA_UPDATE=always cargo test --test render  # snapshot 再生成
-```
+検証基準は `.github/workflows/ci.yml` を正とする。`.claude/hooks/` は Claude Code の補助であり、他のエージェントでは自動実行を前提にしない。snapshot は既存の出力契約として扱い、仕様変更の理由がない差分は受け入れない。
 
-`cargo fmt` と `cargo clippy` は手で回さなくてよい。編集した `.rs` は PostToolUse hook が rustfmt にかけ、応答終了時に Stop hook が clippy と未レビュー snapshot を検査する（`.claude/hooks/`）。CI は `cargo fmt --check` / `cargo clippy --all-targets --all-features -- -D warnings` / `cargo test --all-features` を Linux・macOS・Windows で回す。
+文書の解析・リソース準備と、画面幅に依存する配置を分離する。リサイズで入力ファイルの再読込や構文解析を起こさない。フレーバー差は `flavor/` に閉じ、IR に端末や具体的なスタイルへの依存を持ち込まない。
 
-リリースは `/release`。
-
-## アーキテクチャ
-
-パイプラインは一方向で、各段が次の段の入力だけを作る:
-
-```text
-input(src/input.rs) → flavor::parse → diagram::resolve → layout::layout_document → output / pager
-```
-
-- **`markdown/`** — `pulldown-cmark` によるパースと renderer-neutral な Document IR。
-- **`flavor/`** — `gfm.rs` と `azure_devops.rs`。フレーバー差はここに閉じ、layout 以降に持ち込まない。
-- **`diagram/`** — Mermaid をレイアウト前に一度だけ描画し、`DiagramBlock::rendered`（テキスト）か `DiagramBlock::png`（`--mermaid image`）に格納する。
-- **`layout/`** — IR を `RenderedLine` / `RenderedSpan` の面へ変換する。span は色ではなく意味的な `StyleRole` を持つ。
-- **`output/`** — stdout backend（`ansi.rs` / `plain.rs`）。
-- **`pager/`** — `app.rs` のイベントループ、`state.rs` の純粋な状態遷移、`view.rs` の ratatui 描画、`watch.rs` のファイル追従。
-- **`cli.rs` / `config.rs`** — フラグ定義と `~/.config/mdvu/config.toml`。
-
-`--mermaid image` の画像化（`diagram/raster.rs`）と画像の描画（`image/`・`pager/images.rs`）を触る前に `docs/mermaid-image.md` を読む。
-
-各段の決定事項は `.claude/rules/` にあり、該当ファイルを読んだ時点で読み込まれる（`rendering.md` = markdown / flavor / diagram / layout、`runtime.md` = cli / config / pager）。
+各段の判断基準は `docs/` にある。`src/markdown/`・`src/flavor/`・`src/diagram/`・`src/layout/` と render の snapshot を触る前に `docs/rendering.md` を、`src/pager/`・CLI・config を触る前に `docs/runtime.md` を、画像関連の変更では `docs/mermaid-image.md` を読む。
 
 ## 常に守ること
 

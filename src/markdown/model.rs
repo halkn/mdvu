@@ -3,6 +3,7 @@
 
 use crate::diagnostic::Diagnostic;
 use crate::source::{SourceRange, SourceText};
+use std::rc::Rc;
 
 #[derive(Debug)]
 pub struct Document {
@@ -38,23 +39,26 @@ pub struct DiagramBlock {
     pub language: String,
     pub source: String,
     pub range: SourceRange,
-    /// Rendered diagram text, filled in once before layout. `None` means the
-    /// source is shown instead, either by request or after a failure.
-    pub rendered: Option<Vec<String>>,
-    /// Rendered diagram as a picture, filled in instead of `rendered` in
-    /// image mode.
-    pub png: Option<DiagramPng>,
+    pub output: DiagramOutput,
     /// Compatibility warnings shown immediately above the diagram.
     pub warnings: Vec<String>,
-    /// Normalised render error, shown with the source as a fallback.
-    pub error: Option<String>,
-    /// The failure was an unsupported diagram family rather than bad syntax.
-    pub unsupported: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum DiagramOutput {
+    #[default]
+    Source,
+    Text(Vec<String>),
+    Image(DiagramPng),
+    Failed {
+        message: String,
+        unsupported: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiagramPng {
-    pub bytes: Vec<u8>,
+    pub bytes: Rc<[u8]>,
     /// Width in CSS pixels. The picture's own resolution varies with its
     /// size, so this is what decides its size on screen.
     pub css_width: u32,
@@ -66,11 +70,32 @@ impl DiagramBlock {
             language,
             source,
             range,
-            rendered: None,
-            png: None,
+            output: DiagramOutput::Source,
             warnings: Vec::new(),
-            error: None,
-            unsupported: false,
+        }
+    }
+}
+
+#[cfg(test)]
+impl DiagramBlock {
+    pub fn rendered(&self) -> Option<&Vec<String>> {
+        match &self.output {
+            DiagramOutput::Text(lines) => Some(lines),
+            _ => None,
+        }
+    }
+
+    pub fn png(&self) -> Option<&DiagramPng> {
+        match &self.output {
+            DiagramOutput::Image(png) => Some(png),
+            _ => None,
+        }
+    }
+
+    pub fn error(&self) -> Option<&str> {
+        match &self.output {
+            DiagramOutput::Failed { message, .. } => Some(message),
+            _ => None,
         }
     }
 }
@@ -109,6 +134,7 @@ pub struct PlaceholderBlock {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeadingBlock {
     pub level: u8,
+    pub atx: bool,
     pub content: Vec<Inline>,
     /// Decoration-free text, used for the table of contents.
     pub plain: String,

@@ -1,17 +1,11 @@
 //! Golden rendering tests. The binary is driven end to end so the CLI wiring,
 //! layout engine and output backends are all covered.
 
-use assert_cmd::Command;
+mod common;
 
 fn render(args: &[&str]) -> String {
-    let output = Command::cargo_bin("mdvu")
-        .expect("binary should be built")
+    let output = common::mdvu()
         .args(args)
-        // Keep the rendered surface independent of the developer's terminal
-        // and of any configuration file they happen to have.
-        .env_remove("COLORFGBG")
-        .env_remove("NO_COLOR")
-        .env("MDVU_CONFIG", "")
         .assert()
         .success()
         .get_output()
@@ -304,8 +298,7 @@ fn color_always_emits_ansi_even_when_captured() {
 
 #[test]
 fn no_color_env_disables_ansi_under_auto() {
-    let out = Command::cargo_bin("mdvu")
-        .expect("binary should be built")
+    let out = common::mdvu()
         .args([
             "--paging",
             "never",
